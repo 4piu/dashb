@@ -1,26 +1,51 @@
 import sys
-import asyncio
 import logging
-import threading
-from PyQt6.QtWidgets import QMainWindow, QSystemTrayIcon, QMenu, QApplication, QTextEdit, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QWidget, QCheckBox, QLineEdit, QSystemTrayIcon, QMenu
-from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import QSettings
-from aiohttp import web
-import asyncio
+from PySide6.QtWidgets import (
+    QMainWindow,
+    QSystemTrayIcon,
+    QMenu,
+    QApplication,
+    QTextEdit,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QHBoxLayout,
+    QFrame,
+    QWidget,
+    QCheckBox,
+    QLineEdit,
+    QSystemTrayIcon,
+    QMenu,
+)
+from PySide6.QtGui import QIcon, QIntValidator, QRegularExpressionValidator
+from PySide6.QtCore import QSettings, QRegularExpression
+
+from server import WebServer
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super(MainWindow, self).__init__()
 
+        # Initialize the logger
+        logger_handler = QtLogHandler(self)
+        logger_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+        logger.addHandler(logger_handler)
+
+        # HTTP and WebSocket servers
+        self.server = WebServer(logger)
+
         # set window title and icon
-        self.setWindowTitle("Gayj")
+        self.setWindowTitle("Dashb")
         self.setWindowIcon(QIcon("icon.svg"))
 
         # Create a tray icon
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(QIcon("icon.svg"))
-        self.tray_icon.setToolTip("Gayj")
+        self.tray_icon.setToolTip("Dashb")
         self.tray_icon.show()
 
         # tray menu
@@ -29,22 +54,23 @@ class MainWindow(QMainWindow):
         quit_action = self.tray_menu.addAction("Quit")
         quit_action.triggered.connect(QApplication.quit)
         # click tray icon to show window
-        self.tray_icon.activated.connect(lambda reason: reason == QSystemTrayIcon.ActivationReason.Trigger and self.show())
+        self.tray_icon.activated.connect(
+            lambda reason: reason == QSystemTrayIcon.ActivationReason.Trigger
+            and self.show()
+        )
 
-        # Initialize the logger for server log output
-        self.logger = logging.getLogger('server')
-        self.logger.setLevel(logging.INFO)
-        self.log_handler = QtLogHandler(self)
-        self.logger.addHandler(self.log_handler)
-
-        # Create a button for starting and stopping the server
-        self.button_start_stop = QPushButton("Start Server", self)
-        self.button_start_stop.clicked.connect(self.start_stop_server)
+        # Create a button for restarting the server
+        self.btn_restart_server = QPushButton("Restart Server", self)
+        self.btn_restart_server.clicked.connect(self.restart_server)
 
         # Create a button for opening settings
         self.button_settings = QPushButton("Settings", self)
         self.button_settings.clicked.connect(lambda: self.settings_window.show())
         self.settings_window = SettingsWindow()
+
+        # Create a button for quitting the application
+        self.button_quit = QPushButton("Quit", self)
+        self.button_quit.clicked.connect(QApplication.quit)
 
         # Create a read-only text for showing server log
         self.text_log = QTextEdit(self)
@@ -52,9 +78,10 @@ class MainWindow(QMainWindow):
 
         # Create the layout for buttons
         button_layout = QHBoxLayout()
-        button_layout.addWidget(self.button_start_stop)
+        button_layout.addWidget(self.btn_restart_server)
         button_layout.addStretch()  # Spacer to push button to the right
         button_layout.addWidget(self.button_settings)
+        button_layout.addWidget(self.button_quit)
 
         # Create a separator (horizontal line)
         separator = QFrame()
@@ -74,9 +101,20 @@ class MainWindow(QMainWindow):
         # Set the central widget to the QMainWindow
         self.setCentralWidget(central_widget)
 
-        # Initialize server state
-        self.server_running = False
-        self.server_thread = None
+        # Start the server
+        host = self.settings_window.settings.value("host", "0.0.0.0", type=str)
+        port = self.settings_window.settings.value("port", 8080, type=int)
+        try:
+            self.server.start(host, port)
+        except Exception as e:
+            logger.error(f"Error starting server: {e}")
+
+    def restart_server(self):
+        """Restart the server."""
+        host = self.settings_window.settings.value("host", "0.0.0.0", type=str)
+        port = self.settings_window.settings.value("port", 8080, type=int)
+        self.server.stop()
+        self.server.start(host, port)
 
     # close to tray
     def closeEvent(self, event):
@@ -88,78 +126,6 @@ class MainWindow(QMainWindow):
         """Logs message to the text area."""
         self.text_log.append(message)
 
-    def start_stop_server(self):
-        if self.server_running: 
-            self.stop_server()
-        else:
-            self.start_server()
-
-    def start_server(self):
-        """Starts the HTTP/WebSocket server in a separate thread."""
-        self.logger.info("Starting server")
-        self.server_running = True
-        self.button_start_stop.setText("Stop Server")
-
-        # Initialize the server class and pass the logger
-        self.server = MyServer(logger=self.logger)
-
-        # Run the server in a separate thread
-        self.server_thread = threading.Thread(target=self.run_server_in_thread, daemon=True)
-        self.server_thread.start()
-
-    def stop_server(self):
-        """Stops the HTTP/WebSocket server."""
-        self.logger.info("Stopping server")
-        self.server_running = False
-        self.button_start_stop.setText("Start Server")
-
-    def run_server_in_thread(self):
-        """Runs the server in a separate thread."""
-        asyncio.run(self.server.start())
-
-
-class MyServer:
-    def __init__(self, logger=None):
-        """Initialize the server with the logger from the main window."""
-        self.logger = logger
-        self.app = web.Application()
-
-        # Set up routes
-        self.app.router.add_get('/', self.http_handler)
-        self.app.router.add_get('/ws', self.websocket_handler)
-
-    async def start(self):
-        """Starts the aiohttp server."""
-        runner = web.AppRunner(self.app)
-        await runner.setup()
-        site = web.TCPSite(runner, 'localhost', 8080)
-        self.logger.info("Server started at http://localhost:8080")
-        await site.start()
-
-        # Keep the server running
-        while True:
-            await asyncio.sleep(1)
-
-    async def http_handler(self, request):
-        """Handle HTTP requests at /."""
-        self.logger.info("Received HTTP request")
-        return web.Response(text="Hello from HTTP server!")
-
-    async def websocket_handler(self, request):
-        """Handle WebSocket connections at /ws."""
-        self.logger.info("WebSocket connection established")
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-
-        async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
-                await ws.send_str(f"Server received: {msg.data}")
-                self.logger.info(f"Received WebSocket message: {msg.data}")
-            elif msg.type == web.WSMsgType.CLOSE:
-                break
-
-        self.logger.info("WebSocket connection closed")
-        return ws
 
 class SettingsWindow(QMainWindow):
     def __init__(self):
@@ -170,12 +136,18 @@ class SettingsWindow(QMainWindow):
         self.setWindowIcon(QIcon("icon.svg"))
 
         # Initialize QSettings
-        self.settings = QSettings("MyApp", "GayjApp")
+        self.settings = QSettings("MyApp", "Dashb")
+
+        # Create a QLineEdit with label for server host
+        self.host_label = QLabel("Host:", self)
+        self.host_input = QLineEdit(self)
+        self.host_input.setFixedWidth(100)
 
         # Create a QLineEdit with label for server port
         self.port_label = QLabel("Port:", self)
         self.port_input = QLineEdit(self)
         self.port_input.setFixedWidth(50)
+        self.port_input.setValidator(QIntValidator(1,65535)) # 1-65535 numbers only
 
         # Create a check box for run on startup
         self.run_on_startup = QCheckBox("Run on startup", self)
@@ -190,6 +162,8 @@ class SettingsWindow(QMainWindow):
 
         # Create the form layout for the label and input
         form_layout = QHBoxLayout()
+        form_layout.addWidget(self.host_label)
+        form_layout.addWidget(self.host_input)
         form_layout.addWidget(self.port_label)
         form_layout.addWidget(self.port_input)
 
@@ -215,21 +189,26 @@ class SettingsWindow(QMainWindow):
         self.load_settings()
 
     def save_settings(self):
-        """ Save settings to persistent storage. """
+        """Save settings to persistent storage."""
+        self.settings.setValue("host", self.host_input.text())
         self.settings.setValue("port", self.port_input.text())
         self.settings.setValue("run_on_startup", self.run_on_startup.isChecked())
         self.close()
 
     def load_settings(self):
-        """ Load settings from persistent storage. """
-        port = self.settings.value("port", "")
+        """Load settings from persistent storage."""
+        host = self.settings.value("host", "0.0.0.0", type=str)
+        port = self.settings.value("port", "8080", type=str)
         run_on_startup = self.settings.value("run_on_startup", False, type=bool)
 
+        self.host_input.setText(host)
         self.port_input.setText(port)
         self.run_on_startup.setChecked(run_on_startup)
 
+
 class QtLogHandler(logging.Handler):
     """Custom log handler to redirect log messages to the QTextEdit widget."""
+
     def __init__(self, window):
         super().__init__()
         self.window = window
@@ -243,7 +222,8 @@ def main():
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    app.exec()
+    sys.exit()
 
 
 if __name__ == "__main__":
