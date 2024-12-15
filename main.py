@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QHBoxLayout,
+    QFormLayout,
     QFrame,
     QWidget,
     QCheckBox,
@@ -17,26 +18,20 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
     QMenu,
 )
-from PySide6.QtGui import QIcon, QIntValidator, QRegularExpressionValidator
-from PySide6.QtCore import QSettings, QRegularExpression
+from PySide6.QtGui import QIcon, QIntValidator
+from PySide6.QtCore import QSettings, QProcess
 
-from server import WebServer
-
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s :: %(levelname)s :: %(message)s"
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.debug(sys.executable)
+logger.debug(sys.version)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super(MainWindow, self).__init__()
-
-        # Initialize the logger
-        logger_handler = QtLogHandler(self)
-        logger_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-        logger.addHandler(logger_handler)
-
-        # HTTP and WebSocket servers
-        self.server = WebServer(logger)
 
         # set window title and icon
         self.setWindowTitle("Dashb")
@@ -59,9 +54,10 @@ class MainWindow(QMainWindow):
             and self.show()
         )
 
-        # Create a button for restarting the server
-        self.btn_restart_server = QPushButton("Restart Server", self)
-        self.btn_restart_server.clicked.connect(self.restart_server)
+        # Create a button for start/stop the server
+        self.btn_server_toggle = QPushButton("Start Server", self)
+        self.btn_server_toggle.setCheckable(True)
+        self.btn_server_toggle.clicked.connect(self.on_server_toggle)
 
         # Create a button for opening settings
         self.button_settings = QPushButton("Settings", self)
@@ -78,7 +74,7 @@ class MainWindow(QMainWindow):
 
         # Create the layout for buttons
         button_layout = QHBoxLayout()
-        button_layout.addWidget(self.btn_restart_server)
+        button_layout.addWidget(self.btn_server_toggle)
         button_layout.addStretch()  # Spacer to push button to the right
         button_layout.addWidget(self.button_settings)
         button_layout.addWidget(self.button_quit)
@@ -102,19 +98,65 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         # Start the server
-        host = self.settings_window.settings.value("host", "0.0.0.0", type=str)
-        port = self.settings_window.settings.value("port", 8080, type=int)
-        try:
-            self.server.start(host, port)
-        except Exception as e:
-            logger.error(f"Error starting server: {e}")
+        self.btn_server_toggle.click()
 
-    def restart_server(self):
-        """Restart the server."""
+    def start_server(self):
+        """Start the server."""
         host = self.settings_window.settings.value("host", "0.0.0.0", type=str)
         port = self.settings_window.settings.value("port", 8080, type=int)
-        self.server.stop()
-        self.server.start(host, port)
+        username = self.settings_window.settings.value("username", "", type=str)
+        password = self.settings_window.settings.value("password", "", type=str)
+
+        # Run server.py in QProcess
+        self.server_process = QProcess()
+        self.server_process.setProgram(sys.executable)
+
+        # pass config as environment vars to the server.py script
+        # env = QProcessEnvironment.systemEnvironment()
+        env = self.server_process.processEnvironment()
+        env.insert("HOST", host)
+        env.insert("PORT", str(port))
+        env.insert("USERNAME", username)
+        env.insert("PASSWORD", password)
+        self.server_process.setProcessEnvironment(env)
+
+        self.server_process.setArguments(["server.py"])
+
+        # Redirect standard output and error to log_message
+        self.server_process.readyReadStandardOutput.connect(
+            lambda: self.log_message(
+                self.server_process.readAllStandardOutput().data().decode()
+            )
+        )
+        self.server_process.readyReadStandardError.connect(
+            lambda: self.log_message(
+                self.server_process.readAllStandardError().data().decode()
+            )
+        )
+        self.server_process.start()
+
+    def stop_server(self):
+        """Stop the server."""
+        if not hasattr(self, "server_process"):
+            logger.warning("Server process not found")
+            return
+        # Stop the server process, kill after 3 seconds if not stopped
+        self.server_process.terminate()
+        if not self.server_process.waitForFinished(3000):
+            logger.warning("Server did not stop gracefully, killing it")
+            self.server_process.kill()
+
+    def on_server_toggle(self):
+        """Start or stop the server."""
+        logger.debug(f"Switch checked: {self.btn_server_toggle.isChecked()}")
+        if self.btn_server_toggle.isChecked():
+            logger.info("Starting server")
+            self.start_server()
+            self.btn_server_toggle.setText("Stop Server")
+        else:
+            logger.info("Stopping server")
+            self.stop_server()
+            self.btn_server_toggle.setText("Start Server")
 
     # close to tray
     def closeEvent(self, event):
@@ -122,8 +164,9 @@ class MainWindow(QMainWindow):
         self.settings_window.hide()
         self.hide()
 
-    def log_message(self, message):
+    def log_message(self, message: str):
         """Logs message to the text area."""
+        logging.info(message)
         self.text_log.append(message)
 
 
@@ -147,7 +190,22 @@ class SettingsWindow(QMainWindow):
         self.port_label = QLabel("Port:", self)
         self.port_input = QLineEdit(self)
         self.port_input.setFixedWidth(50)
-        self.port_input.setValidator(QIntValidator(1,65535)) # 1-65535 numbers only
+        self.port_input.setValidator(QIntValidator(1, 65535))  # 1-65535 numbers only
+
+        # create a checkbox for Basic Auth
+        self.basic_auth = QCheckBox("Basic Auth", self)
+        self.basic_auth.toggled.connect(self.on_basic_auth_toggle)
+
+        # Create a QLineEdit with label for username
+        self.username_label = QLabel("Username:", self)
+        self.username_input = QLineEdit(self)
+        self.username_input.setFixedWidth(100)
+
+        # Create a QLineEdit with label for password
+        self.password_label = QLabel("Password:", self)
+        self.password_input = QLineEdit(self)
+        self.password_input.setFixedWidth(100)
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
 
         # Create a check box for run on startup
         self.run_on_startup = QCheckBox("Run on startup", self)
@@ -161,11 +219,13 @@ class SettingsWindow(QMainWindow):
         self.button_save.clicked.connect(self.save_settings)
 
         # Create the form layout for the label and input
-        form_layout = QHBoxLayout()
-        form_layout.addWidget(self.host_label)
-        form_layout.addWidget(self.host_input)
-        form_layout.addWidget(self.port_label)
-        form_layout.addWidget(self.port_input)
+        port_settings_layout = QFormLayout()
+        port_settings_layout.addRow(self.host_label, self.host_input)
+        port_settings_layout.addRow(self.port_label, self.port_input)
+
+        auth_settings_layout = QFormLayout()
+        auth_settings_layout.addRow(self.username_label, self.username_input)
+        auth_settings_layout.addRow(self.password_label, self.password_input)
 
         # Create the layout for buttons (Save and Cancel)
         button_layout = QHBoxLayout()
@@ -175,8 +235,10 @@ class SettingsWindow(QMainWindow):
 
         # Main layout
         main_layout = QVBoxLayout()
-        main_layout.addLayout(form_layout)  # Add the form (label + input)
-        main_layout.addWidget(self.run_on_startup)  # Add the checkbox
+        main_layout.addLayout(port_settings_layout)
+        main_layout.addWidget(self.basic_auth)
+        main_layout.addLayout(auth_settings_layout)
+        main_layout.addWidget(self.run_on_startup)
         main_layout.addStretch()  # Add spacer to push buttons to the bottom
         main_layout.addLayout(button_layout)  # Add the button layout
 
@@ -188,10 +250,18 @@ class SettingsWindow(QMainWindow):
         # Load saved settings
         self.load_settings()
 
+    def on_basic_auth_toggle(self, checked):
+        """Toggle the username and password input fields."""
+        self.username_input.setEnabled(checked)
+        self.password_input.setEnabled(checked)
+
     def save_settings(self):
         """Save settings to persistent storage."""
         self.settings.setValue("host", self.host_input.text())
         self.settings.setValue("port", self.port_input.text())
+        self.settings.setValue("basic_auth", self.basic_auth.isChecked())
+        self.settings.setValue("username", self.username_input.text())
+        self.settings.setValue("password", self.password_input.text())
         self.settings.setValue("run_on_startup", self.run_on_startup.isChecked())
         self.close()
 
@@ -199,32 +269,24 @@ class SettingsWindow(QMainWindow):
         """Load settings from persistent storage."""
         host = self.settings.value("host", "0.0.0.0", type=str)
         port = self.settings.value("port", "8080", type=str)
+        basic_auth = self.settings.value("basic_auth", False, type=bool)
+        username = self.settings.value("username", "", type=str)
+        password = self.settings.value("password", "", type=str)
         run_on_startup = self.settings.value("run_on_startup", False, type=bool)
 
         self.host_input.setText(host)
         self.port_input.setText(port)
+        self.basic_auth.setChecked(basic_auth)
+        self.username_input.setText(username)
+        self.password_input.setText(password)
+        self.username_input.setEnabled(basic_auth)
+        self.password_input.setEnabled(basic_auth)
         self.run_on_startup.setChecked(run_on_startup)
 
 
-class QtLogHandler(logging.Handler):
-    """Custom log handler to redirect log messages to the QTextEdit widget."""
-
-    def __init__(self, window):
-        super().__init__()
-        self.window = window
-
-    def emit(self, record):
-        log_entry = self.format(record)
-        self.window.log_message(log_entry)
-
-
-def main():
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     app.exec()
     sys.exit()
-
-
-if __name__ == "__main__":
-    main()

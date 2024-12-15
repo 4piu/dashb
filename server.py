@@ -1,67 +1,57 @@
 import asyncio
-from logging import Logger
-from threading import Thread
+import logging
+import os
+from pathlib import Path
 from aiohttp import web
 
+WWWROOT = Path("static")
 
-class WebServer:
-    def __init__(self, logger: Logger):
-        self._logger = logger
-        self._server_thread = None
-        self._loop = None
-        self._server_task = None
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s :: %(levelname)s :: %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-    async def http_handle(self, request):
-        """Handle the request and return a response."""
-        return web.Response(text="Hello, aiohttp!")
-    
-    async def ws_handle(self, request):
-        """Handle the WebSocket connection."""
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-        async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
-                if msg.data == "close":
-                    await ws.close()
-                else:
-                    await ws.send_str(f"Received: {msg.data}")
-            elif msg.type == web.WSMsgType.ERROR:
-                self._logger.error(f"ws connection closed with exception {ws.exception()}")
-        return ws
 
-    def start(self, host: str, port: int):
-        """Start the aiohttp server in a separate thread."""
-        if self._server_thread and self._server_thread.is_alive():
-            self._logger.info("Server is already running.")
-            return
-        
-        def run_server():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
+@web.middleware
+async def static_serve(request, handler):
+    if request.path.startswith("/ws"):
+        return await handler(request)
 
-            app = web.Application()
-            app.router.add_get("/", self.http_handle)
-            app.router.add_get("/ws", self.ws_handle)
+    relative_file_path = Path(request.path).relative_to("/")  # remove root '/'
+    file_path = WWWROOT / relative_file_path  # rebase into static dir
+    if not file_path.exists():
+        return web.HTTPNotFound()
+    if file_path.is_dir():
+        file_path /= "index.html"
+        if not file_path.exists():
+            return web.HTTPNotFound()
+    return web.FileResponse(file_path)
 
-            self._server_task = self._loop.create_task(web._run_app(app, host=host, port=port))
 
-            try:
-                self._loop.run_forever()
-            finally:
-                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
-                self._loop.close()
-                
-        self._server_thread = Thread(target=run_server, daemon=True)
-        self._server_thread.start()
-        self._logger.info(f"Server listening on {host}:{port}")
+async def ws_handle(request):
+    """Handle the WebSocket connection."""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    async for msg in ws:
+        if msg.type == web.WSMsgType.TEXT:
+            if msg.data == "close":
+                await ws.close()
+            else:
+                await ws.send_str(f"Received: {msg.data}")
+        elif msg.type == web.WSMsgType.ERROR:
+            logger.error(f"ws connection closed with exception {ws.exception()}")
+    return ws
 
-    def stop(self):
-        """Stop the aiohttp server."""
-        if not (self._loop and self._server_task):
-            self._logger.info("Server is not running.")
-            return
-        self._loop.call_soon_threadsafe(self._server_task.cancel)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._server_thread.join()
-        self._logger.info("Server stopped.")
 
+if __name__ == "__main__":
+    # print all environment vars
+    # env_vars = "\n".join([f"{k}={v}" for k, v in os.environ.items()])
+    # logger.debug(f"Environment variables:\n{env_vars}")
+    # read config from environment vars
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 8080))
+
+    app = web.Application(middlewares=[static_serve])
+    app.router.add_get("/ws", ws_handle)
+    logger.info(f"Starting server at {host}:{port}")
+    web.run_app(app, host=host, port=port)
