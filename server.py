@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import signal
 from aiohttp import web
 
 WWWROOT = Path("static")
@@ -53,5 +54,14 @@ if __name__ == "__main__":
 
     app = web.Application(middlewares=[static_serve])
     app.router.add_get("/ws", ws_handle)
+
+    # Unix specific signals
+    if os.name == "posix":
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGINT, loop.stop)
+        loop.add_signal_handler(signal.SIGTERM, loop.stop)
+    elif os.name == "nt":
+        logger.warning("Signal handlers are not supported on Windows")
+
     logger.info(f"Starting server at {host}:{port}")
     web.run_app(app, host=host, port=port)

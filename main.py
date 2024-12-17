@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QMenu,
 )
 from PySide6.QtGui import QIcon, QIntValidator
-from PySide6.QtCore import QSettings, QProcess
+from PySide6.QtCore import QSettings, QProcess, QTimer
 
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s :: %(levelname)s :: %(message)s"
@@ -102,6 +102,13 @@ class MainWindow(QMainWindow):
 
     def start_server(self):
         """Start the server."""
+        if (
+            hasattr(self, "server_process")
+            and self.server_process.state() != QProcess.NotRunning
+        ):
+            logger.warning("Server process is already running")
+            return
+
         host = self.settings_window.settings.value("host", "0.0.0.0", type=str)
         port = self.settings_window.settings.value("port", 8080, type=int)
         username = self.settings_window.settings.value("username", "", type=str)
@@ -133,6 +140,11 @@ class MainWindow(QMainWindow):
                 self.server_process.readAllStandardError().data().decode()
             )
         )
+        # Handle server process started and finished signals
+        self.server_process.started.connect(self.on_server_started)
+        self.server_process.finished.connect(self.on_server_stopped)
+
+        logger.info(f"Starting server at {host}:{port}")
         self.server_process.start()
 
     def stop_server(self):
@@ -140,23 +152,53 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "server_process"):
             logger.warning("Server process not found")
             return
-        # Stop the server process, kill after 3 seconds if not stopped
+        if self.server_process.state() == QProcess.NotRunning:
+            logger.warning("Server process is not running")
+            return
+
+        # Attempt to terminate the process
+        logger.info("Terminating server process")
         self.server_process.terminate()
-        if not self.server_process.waitForFinished(3000):
-            logger.warning("Server did not stop gracefully, killing it")
+
+        # Use a QTimer to kill the process after 3 seconds if it doesn't terminate
+        self.server_kill_timer = QTimer(self)
+        self.server_kill_timer.setSingleShot(True)
+
+        self.server_kill_timer.timeout.connect(self.kill_server)
+        self.server_kill_timer.start(3000)
+
+    def kill_server(self):
+        if self.server_process.state() != QProcess.NotRunning:
+            logger.warning("Killing server process")
             self.server_process.kill()
+
+    def on_server_started(self):
+        """Handle server started event."""
+        self.btn_server_toggle.setText("Stop Server")
+        self.btn_server_toggle.setEnabled(True)
+        self.btn_server_toggle.setChecked(True)
+
+    def on_server_stopped(self):
+        """Handle server stopped event."""
+        if hasattr(self, "server_kill_timer"):
+            self.server_kill_timer.stop()
+            self.server_kill_timer.deleteLater()
+
+        self.btn_server_toggle.setText("Start Server")
+        self.btn_server_toggle.setEnabled(True)
+        self.btn_server_toggle.setChecked(False)
 
     def on_server_toggle(self):
         """Start or stop the server."""
         logger.debug(f"Switch checked: {self.btn_server_toggle.isChecked()}")
         if self.btn_server_toggle.isChecked():
-            logger.info("Starting server")
+            self.btn_server_toggle.setText("Starting...")
+            self.btn_server_toggle.setEnabled(False)
             self.start_server()
-            self.btn_server_toggle.setText("Stop Server")
         else:
-            logger.info("Stopping server")
+            self.btn_server_toggle.setText("Stopping...")
+            self.btn_server_toggle.setEnabled(False)
             self.stop_server()
-            self.btn_server_toggle.setText("Start Server")
 
     # close to tray
     def closeEvent(self, event):
