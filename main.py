@@ -22,11 +22,32 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon, QIntValidator
 from PySide6.QtCore import QSettings, QProcess, QTimer
 
+# Set up logging
+logging.config.dictConfig(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s :: %(levelname)s :: %(message)s",
+            },
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "default",
+            },
+        },
+        "loggers": {
+            "": {
+                "handlers": ["console"],
+                "level": "DEBUG",
+            },
+        },
+    }
+)
+
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter("%(asctime)s :: %(levelname)s :: %(message)s"))
-logger.addHandler(handler)
 
 logger.debug(sys.executable)
 logger.debug(sys.version)
