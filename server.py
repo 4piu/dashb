@@ -2,66 +2,70 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-import signal
-from aiohttp import web
+from quart import Quart, websocket, send_file, jsonify
+from hypercorn.config import Config
+from hypercorn.asyncio import serve
 
 WWWROOT = Path("static")
 
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s :: %(levelname)s :: %(message)s"
+logging.config.dictConfig(
+    {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "custom": {
+                "format": "%(asctime)s %(name)s [%(levelname)s] %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            }
+        },
+        "handlers": {
+            "console": {"class": "logging.StreamHandler", "formatter": "custom"}
+        },
+        "__main__": {"handlers": ["console"], "level": "DEBUG"},
+        "root": {"handlers": ["console"], "level": "DEBUG"},
+    }
 )
+
+app = Quart(__name__)
+
 logger = logging.getLogger(__name__)
 
 
-@web.middleware
-async def static_serve(request, handler):
-    if request.path.startswith("/ws"):
-        return await handler(request)
-
-    relative_file_path = Path(request.path).relative_to("/")  # remove root '/'
-    file_path = WWWROOT / relative_file_path  # rebase into static dir
+@app.route("/")
+@app.route("/<path:path>")
+async def static_serve(path="index.html"):
+    NOT_FOUND_ERROR = {"error": "Not Found"}
+    file_path = WWWROOT / path
+    logger.debug(f"Requested path: {path}\t file path: {file_path}")
     if not file_path.exists():
-        return web.HTTPNotFound()
+        return jsonify(NOT_FOUND_ERROR), 404
     if file_path.is_dir():
         file_path /= "index.html"
         if not file_path.exists():
-            return web.HTTPNotFound()
-    return web.FileResponse(file_path)
+            return jsonify(NOT_FOUND_ERROR), 404
+    return await send_file(file_path)
 
 
-async def ws_handle(request):
-    """Handle the WebSocket connection."""
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    async for msg in ws:
-        if msg.type == web.WSMsgType.TEXT:
-            if msg.data == "close":
-                await ws.close()
-            else:
-                await ws.send_str(f"Received: {msg.data}")
-        elif msg.type == web.WSMsgType.ERROR:
-            logger.error(f"ws connection closed with exception {ws.exception()}")
-    return ws
+@app.websocket("/ws")
+async def ws_handle():
+    while True:
+        msg = await websocket.receive()
+        if msg == "close":
+            await websocket.close()
+            break
+        else:
+            await websocket.send(f"Received: {msg}")
 
 
 if __name__ == "__main__":
-    # print all environment vars
-    # env_vars = "\n".join([f"{k}={v}" for k, v in os.environ.items()])
-    # logger.debug(f"Environment variables:\n{env_vars}")
-    # read config from environment vars
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8080))
 
-    app = web.Application(middlewares=[static_serve])
-    app.router.add_get("/ws", ws_handle)
+    logger.info(f"Starting server...")
 
-    # Unix specific signals
-    if os.name == "posix":
-        loop = asyncio.get_event_loop()
-        loop.add_signal_handler(signal.SIGINT, loop.stop)
-        loop.add_signal_handler(signal.SIGTERM, loop.stop)
-    elif os.name == "nt":
-        logger.warning("Signal handlers are not supported on Windows")
-
-    logger.info(f"Starting server at {host}:{port}")
-    web.run_app(app, host=host, port=port)
+    config = Config()
+    config.accesslog = logger
+    config.access_log_format = '%(h)s "%(r)s" %(s)s %(b)s'
+    config.errorlog = logger
+    config.bind = [f"{host}:{port}"]
+    asyncio.run(serve(app, config))
