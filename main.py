@@ -78,10 +78,18 @@ class MainWindow(QMainWindow):
             and self.show()
         )
 
+        # Create a read-only text for showing server log
+        self.text_log = QTextEdit(self)
+        self.text_log.setReadOnly(True)
+
         # Create a button for start/stop the server
         self.btn_server_toggle = QPushButton("Start Server", self)
         self.btn_server_toggle.setCheckable(True)
         self.btn_server_toggle.clicked.connect(self.on_server_toggle)
+
+        # Create a button for clearing the log
+        self.button_clear_log = QPushButton("Clear Log", self)
+        self.button_clear_log.clicked.connect(self.text_log.clear)
 
         # Create a button for opening settings
         self.button_settings = QPushButton("Settings", self)
@@ -92,13 +100,10 @@ class MainWindow(QMainWindow):
         self.button_quit = QPushButton("Quit", self)
         self.button_quit.clicked.connect(QApplication.quit)
 
-        # Create a read-only text for showing server log
-        self.text_log = QTextEdit(self)
-        self.text_log.setReadOnly(True)
-
         # Create the layout for buttons
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.btn_server_toggle)
+        button_layout.addWidget(self.button_clear_log)
         button_layout.addStretch()  # Spacer to push button to the right
         button_layout.addWidget(self.button_settings)
         button_layout.addWidget(self.button_quit)
