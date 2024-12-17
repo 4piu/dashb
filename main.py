@@ -1,3 +1,4 @@
+import os
 import sys
 import logging
 from PySide6.QtWidgets import (
@@ -21,10 +22,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon, QIntValidator
 from PySide6.QtCore import QSettings, QProcess, QTimer
 
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s :: %(levelname)s :: %(message)s"
-)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("%(asctime)s :: %(levelname)s :: %(message)s"))
+logger.addHandler(handler)
+
 logger.debug(sys.executable)
 logger.debug(sys.version)
 
@@ -154,6 +157,11 @@ class MainWindow(QMainWindow):
             return
         if self.server_process.state() == QProcess.NotRunning:
             logger.warning("Server process is not running")
+            return
+
+        if os.name == "nt":
+            # On Windows, simply kill the process with no mercy. See https://doc.qt.io/qt-6/qprocess.html#terminate
+            self.server_process.kill()
             return
 
         # Attempt to terminate the process
