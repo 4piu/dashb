@@ -19,7 +19,7 @@ from hypercorn.asyncio import serve
 from probe import Functions
 from task import Task
 
-WWWROOT = Path(__file__).parent.parent / "wwwroot"
+WWWROOT = Path(__file__).parent.parent / "web-app" / "dist"
 MAX_CLIENTS = 3
 
 logging.config.dictConfig(
