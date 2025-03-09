@@ -9,6 +9,7 @@ Functions: dict[str, Callable] = {
     "hw.cpu.load_avg": cpu.get_load_avg,
     "hw.memory.virtual": memory.get_virtual_memory,
     "hw.memory.swap": memory.get_swap_memory,
+    "hw.gpu.nvidia": gpu.get_nv_gpu_info,
     "net.io": network.get_net_io_counters,
 }
 
