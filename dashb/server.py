@@ -117,8 +117,8 @@ async def ws_handle():
                     # check types and value
                     if (
                         interval
-                        and not isinstance(interval, (int, float))
-                        or interval <= 0
+                        and (not isinstance(interval, (int, float))
+                        or interval <= 0)
                     ):
                         await websocket.send(f"Invalid interval for {func_id}")
                         continue
