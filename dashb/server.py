@@ -108,7 +108,7 @@ async def ws_handle():
                 for task in task_pool:
                     task.stop()
                 task_pool.clear()
-                
+
                 for function in msg_json.get("functions", []):
                     func_id = function.get("func", None)
                     # check if function exists
@@ -120,10 +120,8 @@ async def ws_handle():
                     kwargs = function.get("kwargs", {})
 
                     # check types and value
-                    if (
-                        interval
-                        and (not isinstance(interval, (int, float))
-                        or interval <= 0)
+                    if interval and (
+                        not isinstance(interval, (int, float)) or interval <= 0
                     ):
                         await websocket.send(f"Invalid interval for {func_id}")
                         continue

@@ -20,6 +20,8 @@ def get_nv_gpu_info(
 ) -> list[str | float]:
     """
     Get GPU information from nvidia-smi
+    :param query_gpu: list of fields to query
+    :return: list of values
     """
     query = ",".join(query_gpu)
     cmd = f"nvidia-smi --query-gpu={query} --format=csv,noheader,nounits"

@@ -45,6 +45,7 @@ class Task:
     def _task(self, result: queue.Queue):
         """
         Runs the task function.
+        :param result: A queue to store the result of the task.
         """
         try:
             if inspect.iscoroutinefunction(self.func):  # async function
