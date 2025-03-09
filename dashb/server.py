@@ -1,11 +1,18 @@
 import asyncio
+import base64
 import json
 import logging
 import logging.config
 import os
 from pathlib import Path
 import uuid
-from quart import Quart, copy_current_websocket_context, websocket, send_file, jsonify
+from quart import (
+    Quart,
+    copy_current_websocket_context,
+    request,
+    websocket,
+    send_file,
+)
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
 
@@ -38,17 +45,45 @@ app = Quart(__name__)
 logger = logging.getLogger(__name__)
 
 
+# Basic auth check function
+def check_basic_auth(auth_header):
+    if not username or not password:
+        logger.warning("Username or password not set")
+        return True  # If username and password are not set, allow access.
+
+    if not auth_header or not auth_header.startswith("Basic "):
+        return False
+
+    try:
+        decoded_auth = base64.b64decode(auth_header[6:]).decode("utf-8")
+        auth_username, auth_password = decoded_auth.split(":", 1)
+        return auth_username == username and auth_password == password
+    except Exception:
+        return False
+
+
+# Middleware for basic auth
+@app.before_request
+async def requires_auth():
+    auth_header = request.headers.get("Authorization")
+    if not check_basic_auth(auth_header):
+        return (
+            "Unauthorized",
+            401,
+            {"WWW-Authenticate": 'Basic realm="Login Required"'},
+        )
+
+
 @app.route("/")
 @app.route("/<path:path>")
 async def static_serve(path="index.html"):
-    NOT_FOUND_ERROR = {"error": "Not Found"}
     file_path = WWWROOT / path
     if not file_path.exists():
-        return jsonify(NOT_FOUND_ERROR), 404
+        return "Not found", 404
     if file_path.is_dir():
         file_path /= "index.html"
         if not file_path.exists():
-            return jsonify(NOT_FOUND_ERROR), 404
+            return "Not found", 404
     return await send_file(file_path)
 
 
@@ -57,6 +92,12 @@ client_pool = {}
 
 @app.websocket("/ws")
 async def ws_handle():
+    if not check_basic_auth(websocket.headers.get("Authorization")):
+        await websocket.accept()
+        await websocket.send(json.dumps({"error": "Unauthorized"}))
+        await websocket.close()
+        return
+
     await websocket.accept()
 
     # limit clients
@@ -167,6 +208,10 @@ async def ws_handle():
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8080))
+
+    # basic auth
+    username = os.getenv("USERNAME", None)
+    password = os.getenv("PASSWORD", None)
 
     logger.info(f"Static files root: {WWWROOT}")
     logger.info(f"Starting server...")
