@@ -1,12 +1,14 @@
 import asyncio
+import json
 import logging
+import logging.config
 import os
 from pathlib import Path
 from quart import Quart, websocket, send_file, jsonify
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
 
-WWWROOT = Path("static")
+WWWROOT = Path(__file__).parent / "wwwroot"
 
 logging.config.dictConfig(
     {
@@ -14,7 +16,7 @@ logging.config.dictConfig(
         "disable_existing_loggers": False,
         "formatters": {
             "custom": {
-                "format": "%(asctime)s %(name)s [%(levelname)s] %(message)s",
+                "format": "%(asctime)s %(filename)s(%(lineno)d) [%(levelname)s] %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",
             }
         },
@@ -36,7 +38,6 @@ logger = logging.getLogger(__name__)
 async def static_serve(path="index.html"):
     NOT_FOUND_ERROR = {"error": "Not Found"}
     file_path = WWWROOT / path
-    logger.debug(f"Requested path: {path}\t file path: {file_path}")
     if not file_path.exists():
         return jsonify(NOT_FOUND_ERROR), 404
     if file_path.is_dir():
@@ -54,7 +55,31 @@ async def ws_handle():
             await websocket.close()
             break
         else:
-            await websocket.send(f"Received: {msg}")
+            try:
+                msg_json = json.loads(msg)
+                """
+                Example JSON:
+                {
+                    "action": "subscribe",
+                    "functions": [
+                        "hw.cpu.percent": {
+                            "interval": 1000,
+                            "kwargs": {
+                                "percpu": false
+                            }
+                        },
+                        "hw.memory.virtual": {
+                            "interval": 3000
+                        }
+                    ]
+                }
+                """
+                logger.debug(f"Received: {msg_json}")
+                if msg_json.get("action") == "subscribe":
+                    await websocket.send("OK")
+            except json.JSONDecodeError:
+                await websocket.send("Invalid JSON")
+                continue
 
 
 if __name__ == "__main__":
