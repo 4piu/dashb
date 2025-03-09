@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import logging
 import queue
 import threading
@@ -45,7 +47,10 @@ class Task:
         Runs the task function.
         """
         try:
-            result.put(self.func(*self.func_args, **self.func_kwargs))
+            if inspect.iscoroutinefunction(self.func):  # async function
+                result.put(asyncio.run(self.func(*self.func_args, **self.func_kwargs)))
+            else:  # sync function
+                result.put(self.func(*self.func_args, **self.func_kwargs))
         except Exception as e:
             result.put(e)
             logging.error(f"Task {self.func.__name__} failed: {e}")
@@ -68,7 +73,10 @@ class Task:
 
             if self.callback:
                 try:
-                    self.callback(result.get_nowait())
+                    if inspect.iscoroutinefunction(self.callback):  # async function
+                        asyncio.run(self.callback(result.get_nowait()))
+                    else:  # sync function
+                        self.callback(result.get_nowait())
                 except queue.Empty:
                     logging.error(f"Task {self.func.__name__} did not return a result")
                 except Exception as e:
