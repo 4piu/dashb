@@ -104,6 +104,11 @@ async def ws_handle():
                 continue
 
             if msg_json.get("action") == "subscribe":
+                # if client is already subscribed, stop previous tasks
+                for task in task_pool:
+                    task.stop()
+                task_pool.clear()
+                
                 for function in msg_json.get("functions", []):
                     func_id = function.get("func", None)
                     # check if function exists
