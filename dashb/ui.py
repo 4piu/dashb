@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import logging.config
+from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow,
     QSystemTrayIcon,
@@ -158,7 +159,10 @@ class MainWindow(QMainWindow):
         env.insert("PASSWORD", password)
         self.server_process.setProcessEnvironment(env)
 
-        self.server_process.setArguments(["dashb/server.py"])
+        # ensure imports resolve by running as module from project root
+        project_root = Path(__file__).resolve().parent.parent
+        self.server_process.setWorkingDirectory(str(project_root))
+        self.server_process.setArguments(["-m", "dashb.server"])
 
         # Redirect standard output and error to log_message
         self.server_process.readyReadStandardOutput.connect(

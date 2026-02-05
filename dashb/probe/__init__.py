@@ -1,16 +1,40 @@
-from typing import Callable
-from . import cpu, memory, network, gpu
+"""Probe dispatcher for supported metrics."""
 
-# funct_id to func mapping
+from typing import Any, Dict
 
-Functions: dict[str, Callable] = {
-    "hw.cpu.percent": cpu.get_cpu_percent,
-    "hw.cpu.freq": cpu.get_cpu_freq,
-    "hw.cpu.load_avg": cpu.get_load_avg,
-    "hw.memory.virtual": memory.get_virtual_memory,
-    "hw.memory.swap": memory.get_swap_memory,
-    "hw.gpu.nvidia": gpu.get_nv_gpu_info,
-    "net.io": network.get_net_io_counters,
-}
+from dashb.probe import cpu, memory, network, gpu
 
-__all__ = ["Functions"]
+
+async def collect_metric(metric: str, params: Dict[str, Any]) -> Any:
+    # CPU
+    if metric == "cpu.utilization":
+        return cpu.get_cpu_percent(percpu=False)
+    if metric == "cpu.per_core.utilization":
+        return cpu.get_cpu_percent(percpu=True)
+
+    # Memory
+    if metric == "memory.used_bytes":
+        return memory.get_virtual_memory()["used"]
+    if metric == "memory.total_bytes":
+        return memory.get_virtual_memory()["total"]
+    if metric == "memory.utilization":
+        return memory.get_virtual_memory()["percent"]
+
+    # Network
+    if metric.startswith("network"):
+        iface = params.get("iface")
+        # metric endswith field name
+        field = metric.split(".")[-1]
+        delta = network.get_network_bytes_per_second(iface)
+        return delta.get(field, 0.0)
+
+    # GPU
+    if metric.startswith("gpu"):
+        index = params.get("index")
+        field = metric.split(".")[-1]
+        return gpu.get_gpu_metric(field, index=index)
+
+    return None
+
+
+__all__ = ["collect_metric"]

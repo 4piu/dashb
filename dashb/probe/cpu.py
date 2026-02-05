@@ -1,8 +1,8 @@
 import psutil
 
 
-def get_cpu_percent(*args, **kwargs) -> float | list[float]:
-    return psutil.cpu_percent(*args, **kwargs)
+def get_cpu_percent(percpu: bool = False) -> float | list[float]:
+    return psutil.cpu_percent(percpu=percpu)
 
 
 def get_cpu_freq(percpu: bool = False) -> dict[str, float] | list[dict[str, float]]:
