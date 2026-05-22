@@ -162,5 +162,5 @@ cython_debug/
 #.idea/
 
 .vscode/
-project_note.md
-dev.env
+notes/
+*.env

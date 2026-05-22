@@ -1,0 +1,12 @@
+[project]
+name = "dashb"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "nvidia-ml-py>=13.595.45",
+    "psutil>=7.2.2",
+    "pyside6>=6.11.1",
+    "quart>=0.20.0",
+]
