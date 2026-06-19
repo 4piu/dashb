@@ -161,14 +161,14 @@ async def ws_handle():
     if not check_basic_auth(websocket.headers.get("Authorization")):
         await websocket.accept()
         await send_error_local("unauthorized", "Unauthorized")
-        await websocket.close()
+        await websocket.close(1008, "Unauthorized")
         return
 
     await websocket.accept()
 
     if len(client_pool) >= MAX_CLIENTS:
         await send_error_local("too_many_clients", "Too many clients connected")
-        await websocket.close()
+        await websocket.close(1013, "Too many clients connected")
         return
 
     client_id = str(uuid.uuid4())
@@ -177,7 +177,8 @@ async def ws_handle():
     logger.debug(f"Client {client_id} connected")
 
     try:
-        async for raw in websocket:
+        while True:
+            raw = await websocket.receive()
             logger.debug(f"Received: {raw}")
             try:
                 msg = json.loads(raw)

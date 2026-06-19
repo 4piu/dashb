@@ -102,6 +102,9 @@ def _nvidia_from_smi() -> List[Dict[str, Any]]:
 
 def _gpus_from_wmic() -> List[Dict[str, Any]]:
     # Windows-specific, provides vendor-neutral names
+    if os.name != "nt":
+        # TODO: add GPU inventory for non-Windows platforms (e.g., lspci/rocm-smi)
+        return []
     cmd = ["wmic", "path", "win32_videocontroller", "get", "Name"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
