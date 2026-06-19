@@ -7,14 +7,21 @@ import os
 import time
 import re
 import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from quart import Quart, request, send_file, websocket
+from quart import Quart, jsonify, request, send_file, websocket
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
 from dashb.probe import info as probe_info
 from dashb.scheduler import ProbeRegistry
+from dashb.theme import (
+    default_webroot,
+    default_theme_root,
+    discover_themes,
+    find_theme,
+    resolve_theme_asset,
+    resolve_webroot_asset,
+)
 from dashb.server_constants import (
     PROTOCOL_VERSION,
     MIN_INTERVAL_MS,
@@ -24,7 +31,8 @@ from dashb.server_constants import (
     SUPPORTED_METRICS,
 )
 
-WWWROOT = Path(__file__).parent.parent / "web-app" / "dist"
+WEBROOT = default_webroot()
+THEME_ROOT = default_theme_root(WEBROOT)
 
 logging.config.dictConfig(
     {
@@ -80,16 +88,46 @@ async def requires_auth():
 
 
 @app.route("/")
-@app.route("/<path:path>")
-async def static_serve(path: str = "index.html"):
-    file_path = WWWROOT / path
-    if not file_path.exists():
+async def theme_picker():
+    index = resolve_webroot_asset(WEBROOT, "index.html")
+    if not index:
+        return "Theme selector not found. Build the web app first.", 404
+    return await send_file(index)
+
+
+@app.route("/api/themes")
+async def api_themes():
+    return jsonify([theme.to_api_dict() for theme in discover_themes(THEME_ROOT)])
+
+
+@app.route("/theme/<theme_id>/")
+async def theme_index(theme_id: str):
+    theme = find_theme(theme_id, THEME_ROOT)
+    if not theme:
+        return "Theme not found", 404
+    entry = resolve_theme_asset(theme, theme.entry)
+    if not entry:
+        return "Theme entry not found", 404
+    return await send_file(entry)
+
+
+@app.route("/theme/<theme_id>/<path:asset_path>")
+async def theme_asset(theme_id: str, asset_path: str):
+    theme = find_theme(theme_id, THEME_ROOT)
+    if not theme:
+        return "Theme not found", 404
+    asset = resolve_theme_asset(theme, asset_path)
+    if not asset:
         return "Not found", 404
-    if file_path.is_dir():
-        file_path /= "index.html"
-        if not file_path.exists():
-            return "Not found", 404
-    return await send_file(file_path)
+    return await send_file(asset)
+
+
+@app.route("/<path:asset_path>")
+async def webroot_asset(asset_path: str):
+    asset = resolve_webroot_asset(WEBROOT, asset_path)
+    if not asset:
+        return "Not found", 404
+    return await send_file(asset)
 
 
 def now_ts_ms() -> int:
@@ -326,7 +364,8 @@ if __name__ == "__main__":
     username = os.getenv("USERNAME", None)
     password = os.getenv("PASSWORD", None)
 
-    logger.info(f"Static files root: {WWWROOT}")
+    logger.info(f"Web root: {WEBROOT}")
+    logger.info(f"Theme root: {THEME_ROOT}")
     logger.info(f"Starting server...")
 
     config = Config()

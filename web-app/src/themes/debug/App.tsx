@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import './App.css';
+import './style.css';
 
 type MetricMeta = {
   metric: string;

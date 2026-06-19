@@ -1,0 +1,9 @@
+{
+  "id": "debug",
+  "name": "Debug",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "description": "Simple live metric list for Dashb development",
+  "author": "",
+  "minServerVersion": "0.1.0"
+}

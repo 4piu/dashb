@@ -1,0 +1,106 @@
+:root {
+  color: #e8ecf8;
+  background: #10141f;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgb(87 140 255 / 0.28), transparent 34rem),
+    radial-gradient(circle at bottom right, rgb(0 255 160 / 0.12), transparent 28rem),
+    #10141f;
+}
+
+.theme-selector {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.theme-card {
+  width: min(36rem, 100%);
+  padding: 2rem;
+  border: 1px solid #273149;
+  border-radius: 1rem;
+  background: rgb(21 27 42 / 0.92);
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 0.35);
+}
+
+.eyebrow {
+  margin: 0 0 0.5rem;
+  color: #8cc8ff;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(2rem, 8vw, 3.5rem);
+  line-height: 1;
+}
+
+.status {
+  margin: 0.85rem 0 1.5rem;
+  color: #9aa6bd;
+}
+
+.theme-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.theme-link {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid #2f3a55;
+  border-radius: 0.75rem;
+  color: inherit;
+  text-decoration: none;
+  background: #101827;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease,
+    background 160ms ease;
+}
+
+.theme-link:hover {
+  border-color: #8cc8ff;
+  background: #142033;
+  transform: translateY(-1px);
+}
+
+.theme-link strong,
+.theme-link small {
+  display: block;
+}
+
+.theme-link strong {
+  color: #f7f9ff;
+}
+
+.theme-link small,
+.theme-link em {
+  margin-top: 0.25rem;
+  color: #9aa6bd;
+}
