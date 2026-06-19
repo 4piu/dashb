@@ -7,17 +7,29 @@ import psutil
 
 
 class NetworkDelta:
+    CACHE_WINDOW_S = 0.1
+
     def __init__(self):
         self.last_ts: Optional[float] = None
         self.last_counters: Optional[Dict[str, Any]] = None
+        self.cached_ts: Optional[float] = None
+        self.cached_deltas: Dict[Optional[str], Dict[str, float]] = {}
 
     def bytes_per_second(self, iface: Optional[str] = None) -> Dict[str, float]:
         now = time.time()
+        if self.cached_ts is not None and (now - self.cached_ts) < self.CACHE_WINDOW_S:
+            cached = self.cached_deltas.get(iface)
+            if cached is not None:
+                return cached
+
         counters = psutil.net_io_counters(pernic=True)
         if self.last_ts is None or self.last_counters is None:
             self.last_ts = now
             self.last_counters = counters
-            return {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
+            zero = {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
+            self.cached_ts = now
+            self.cached_deltas = {iface: zero}
+            return zero
 
         elapsed = now - self.last_ts
         if elapsed <= 0:
@@ -35,7 +47,10 @@ class NetworkDelta:
             if not c1 or not c0:
                 self.last_ts = now
                 self.last_counters = counters
-                return {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
+                zero = {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
+                self.cached_ts = now
+                self.cached_deltas = {iface: zero}
+                return zero
             delta = diff(c1, c0)
         else:
             total1_sent = total1_recv = 0
@@ -54,6 +69,8 @@ class NetworkDelta:
 
         self.last_ts = now
         self.last_counters = counters
+        self.cached_ts = now
+        self.cached_deltas = {iface: delta}
         return delta
 
 
