@@ -5,6 +5,7 @@ type MetricMeta = {
   metric: string;
   unit?: string;
   kind?: string;
+  subscribable?: boolean;
 };
 
 type MetricValue = {
@@ -20,6 +21,16 @@ type ServerInfoMessage = {
 
 type SampleMessage = {
   type: 'sample';
+  ts_ms: number;
+  values?: Array<{
+    metric: string;
+    value: unknown;
+    unit?: string;
+  }>;
+};
+
+type QueryResultMessage = {
+  type: 'query_result';
   ts_ms: number;
   values?: Array<{
     metric: string;
@@ -94,17 +105,34 @@ function App() {
         const message = JSON.parse(event.data) as
           | ServerInfoMessage
           | SampleMessage
+          | QueryResultMessage
           | { type: string; metrics?: MetricMeta[] };
 
         if (message.type === 'server_info') {
           const advertisedMetrics = message.metrics ?? [];
           setMetrics(advertisedMetrics);
+          const queryMetrics = advertisedMetrics
+            .filter(({ subscribable }) => subscribable === false)
+            .map(({ metric }) => metric);
+          const subscriptionMetrics = advertisedMetrics.filter(
+            ({ subscribable }) => subscribable !== false,
+          );
+
+          if (queryMetrics.length > 0) {
+            socket.send(
+              JSON.stringify({
+                type: 'query',
+                id: 'debug-query',
+                metrics: queryMetrics,
+              }),
+            );
+          }
 
           socket.send(
             JSON.stringify({
               type: 'subscribe',
               id: 'debug-subscribe',
-              subscriptions: advertisedMetrics.map(({ metric }) => ({
+              subscriptions: subscriptionMetrics.map(({ metric }) => ({
                 metric,
                 interval_ms: 1000,
               })),
@@ -129,6 +157,24 @@ function App() {
             return next;
           });
           setLastUpdated(sampleMessage.ts_ms);
+          return;
+        }
+
+        if (message.type === 'query_result') {
+          const queryMessage = message as QueryResultMessage;
+          setValues((current) => {
+            const next = { ...current };
+
+            for (const entry of queryMessage.values ?? []) {
+              next[entry.metric] = {
+                value: entry.value,
+                unit: entry.unit,
+                ts_ms: queryMessage.ts_ms,
+              };
+            }
+
+            return next;
+          });
         }
       });
 

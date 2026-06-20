@@ -1,6 +1,6 @@
 """Shared probe scheduler for metrics.
 
-Keeps one sampler per metric+params and fan-outs to subscribed clients.
+Keeps one sampler per metric and fan-outs to subscribed clients.
 """
 
 import asyncio
@@ -8,8 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from dashb.probe import collect_metric
-from dashb.server_constants import SUPPORTED_METRICS, MIN_INTERVAL_MS, MAX_INTERVAL_MS
+from dashb.probe import MetricCatalog
+from dashb.server_constants import MIN_INTERVAL_MS, MAX_INTERVAL_MS
 
 SendFn = Callable[[Dict[str, Any]], Awaitable[None]]
 
@@ -24,7 +24,7 @@ class Subscriber:
 @dataclass
 class ProbeTask:
     metric: str
-    params: Dict[str, Any]
+    catalog: MetricCatalog
     unit: Optional[str]
     kind: str
     subscribers: Dict[str, Subscriber] = field(default_factory=dict)
@@ -35,14 +35,14 @@ class ProbeTask:
     async def _run(self):
         while not self.stopped and self.subscribers:
             started = time.time()
-            value = await collect_metric(self.metric, self.params)
+            value = await self.catalog.collect(self.metric)
             ts_ms = int(time.time() * 1000)
             payload = {
                 "type": "sample",
                 "ts_ms": ts_ms,
                 "values": [
                     {
-                        "metric": self.render_metric_name(),
+                        "metric": self.metric,
                         "value": value,
                         "unit": self.unit,
                     }
@@ -56,15 +56,6 @@ class ProbeTask:
             elapsed = (time.time() - started) * 1000
             sleep_ms = max(0, self.interval_ms - int(elapsed))
             await asyncio.sleep(sleep_ms / 1000)
-
-    def render_metric_name(self) -> str:
-        if not self.params:
-            return self.metric
-        if self.metric.startswith("network") and "iface" in self.params:
-            return f"network.[{self.params['iface']}].{self.metric.split('.')[-1]}"
-        if self.metric.startswith("gpu") and "index" in self.params:
-            return f"gpu.[{self.params['index']}].{self.metric.split('.')[-1]}"
-        return self.metric
 
     def update_interval(self):
         if not self.subscribers:
@@ -87,35 +78,27 @@ class ProbeTask:
 
 
 class ProbeRegistry:
-    def __init__(self):
+    def __init__(self, catalog: MetricCatalog):
+        self.catalog = catalog
         self.tasks: Dict[str, ProbeTask] = {}
-
-    def key_for(self, metric: str, params: Dict[str, Any]) -> str:
-        if metric.startswith("network") and "iface" in params:
-            return f"{metric}|{params['iface']}"
-        if metric.startswith("gpu") and "index" in params:
-            return f"{metric}|{params['index']}"
-        return metric
 
     def subscribe(
         self,
         metric: str,
-        params: Dict[str, Any],
         interval_ms: int,
         client_id: str,
         send: SendFn,
     ):
-        key = self.key_for(metric, params)
-        meta = SUPPORTED_METRICS.get(metric, {"unit": None, "kind": "gauge"})
-        task = self.tasks.get(key)
+        meta = self.catalog.meta(metric)
+        task = self.tasks.get(metric)
         if not task:
             task = ProbeTask(
                 metric=metric,
-                params=params,
+                catalog=self.catalog,
                 unit=meta.get("unit"),
                 kind=meta.get("kind"),
             )
-            self.tasks[key] = task
+            self.tasks[metric] = task
         task.subscribers[client_id] = Subscriber(
             client_id=client_id, send=send, interval_ms=interval_ms
         )
@@ -134,9 +117,8 @@ class ProbeRegistry:
         for key in dead_keys:
             self.tasks.pop(key, None)
 
-    def unsubscribe(self, metric: str, params: Dict[str, Any], client_id: str):
-        key = self.key_for(metric, params)
-        task = self.tasks.get(key)
+    def unsubscribe(self, metric: str, client_id: str):
+        task = self.tasks.get(metric)
         if not task:
             return
         if client_id in task.subscribers:
@@ -144,7 +126,7 @@ class ProbeRegistry:
             task.update_interval()
         if not task.subscribers:
             task.stop()
-            self.tasks.pop(key, None)
+            self.tasks.pop(metric, None)
 
     def shutdown(self):
         for task in self.tasks.values():

@@ -5,14 +5,13 @@ import logging
 import logging.config
 import os
 import time
-import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional, Set
 
 from quart import Quart, jsonify, request, send_file, websocket
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
-from dashb.probe import info as probe_info
+from dashb.probe import build_metric_catalog
 from dashb.scheduler import ProbeRegistry
 from dashb.theme import (
     default_webroot,
@@ -28,7 +27,6 @@ from dashb.server_constants import (
     MAX_INTERVAL_MS,
     MAX_SUBSCRIPTIONS,
     MAX_CLIENTS,
-    SUPPORTED_METRICS,
 )
 
 WEBROOT = default_webroot()
@@ -134,59 +132,36 @@ def now_ts_ms() -> int:
     return int(time.time() * 1000)
 
 
-client_pool: Dict[str, Dict[str, Any]] = {}
-probe_registry = ProbeRegistry()
+active_client_ids: Set[str] = set()
+metric_catalog = build_metric_catalog()
+probe_registry = ProbeRegistry(metric_catalog)
 
 
-NETWORK_PATTERN = re.compile(
-    r"^network\.\[(?P<iface>[\w\.-]+)\]\.(?P<field>bytes_sent_per_s|bytes_recv_per_s)$|^network\.(?P<field_all>bytes_sent_per_s|bytes_recv_per_s)$"
-)
-GPU_PATTERN = re.compile(
-    r"^gpu\.\[(?P<index>\d+)\]\.(?P<field>utilization|memory_used_bytes|temperature_c)$|^gpu\.(?P<field_all>utilization|memory_used_bytes|temperature_c)$"
-)
+class WebSocketSession:
+    def __init__(self):
+        self.client_id = str(uuid.uuid4())
+        self.send_lock = asyncio.Lock()
+        self.subscriptions: set[str] = set()
 
+    async def run(self):
+        active_client_ids.add(self.client_id)
+        logger.debug(f"Client {self.client_id} connected")
+        try:
+            while True:
+                await self.handle_raw_message(await websocket.receive())
+        finally:
+            probe_registry.unsubscribe_client(self.client_id)
+            active_client_ids.discard(self.client_id)
+            logger.debug(f"Client {self.client_id} disconnected")
 
-def validate_metric_name(metric: str) -> bool:
-    """Return True if metric is supported (including parameterized forms)."""
-    if metric in SUPPORTED_METRICS:
-        return True
-    if NETWORK_PATTERN.match(metric):
-        return True
-    if GPU_PATTERN.match(metric):
-        return True
-    return False
-
-
-def parse_metric(metric: str) -> Optional[Dict[str, Any]]:
-    """Parse metric into base name and params dict."""
-    if metric in SUPPORTED_METRICS:
-        return {"base": metric, "params": {}}
-    m = NETWORK_PATTERN.match(metric)
-    if m:
-        iface = m.group("iface")
-        field = m.group("field") or m.group("field_all")
-        return {"base": f"network.{field}", "params": {"iface": iface} if iface else {}}
-    m = GPU_PATTERN.match(metric)
-    if m:
-        idx = m.group("index")
-        field = m.group("field") or m.group("field_all")
-        return {
-            "base": f"gpu.{field}",
-            "params": {"index": int(idx)} if idx is not None else {},
-        }
-    return None
-
-
-@app.websocket("/ws")
-async def ws_handle():
-    send_lock = asyncio.Lock()
-
-    async def send_json_local(message: Dict[str, Any]):
-        async with send_lock:
+    async def send_json(self, message: Dict[str, Any]):
+        async with self.send_lock:
             await websocket.send(json.dumps(message))
 
-    async def send_error_local(code: str, message: str, req_id: Optional[str] = None):
-        await send_json_local(
+    async def send_error(
+        self, code: str, message: str, req_id: Optional[str] = None
+    ):
+        await self.send_json(
             {
                 "type": "error",
                 "id": req_id,
@@ -196,164 +171,200 @@ async def ws_handle():
             }
         )
 
+    async def handle_raw_message(self, raw: str):
+        logger.debug(f"Received: {raw}")
+        try:
+            message = json.loads(raw)
+        except json.JSONDecodeError:
+            await self.send_error("invalid_json", "Invalid JSON payload")
+            return
+
+        handlers = {
+            "hello": self.handle_hello,
+            "ping": self.handle_ping,
+            "query": self.handle_query,
+            "subscribe": self.handle_subscribe,
+            "unsubscribe": self.handle_unsubscribe,
+        }
+        handler = handlers.get(message.get("type"))
+        if not handler:
+            await self.send_error(
+                "unknown_type",
+                f"Unknown message type: {message.get('type')}",
+                message.get("id"),
+            )
+            return
+        await handler(message)
+
+    async def handle_hello(self, message: Dict[str, Any]):
+        req_id = message.get("id")
+        proto_min = int(message.get("proto_min", PROTOCOL_VERSION))
+        proto_max = int(message.get("proto_max", PROTOCOL_VERSION))
+        if proto_min > PROTOCOL_VERSION or proto_max < PROTOCOL_VERSION:
+            await self.send_error(
+                "unsupported_proto", "Protocol version not supported", req_id
+            )
+            return
+
+        await self.send_json(
+            {
+                "type": "welcome",
+                "id": req_id,
+                "ts_ms": now_ts_ms(),
+                "proto": PROTOCOL_VERSION,
+                "server": {"name": "dashb", "version": "0.1.0"},
+                "capabilities": {
+                    "auth": "basic" if username and password else "none",
+                    "tls": False,
+                    "query": True,
+                    "max_subscriptions": MAX_SUBSCRIPTIONS,
+                    "min_interval_ms": MIN_INTERVAL_MS,
+                    "max_interval_ms": MAX_INTERVAL_MS,
+                },
+            }
+        )
+        await self.send_json(
+            {
+                "type": "server_info",
+                "ts_ms": now_ts_ms(),
+                "metrics": metric_catalog.as_payload(),
+            }
+        )
+
+    async def handle_ping(self, message: Dict[str, Any]):
+        await self.send_json(
+            {"type": "pong", "id": message.get("id"), "ts_ms": now_ts_ms()}
+        )
+
+    async def handle_query(self, message: Dict[str, Any]):
+        req_id = message.get("id")
+        metrics = message.get("metrics", [])
+        if not isinstance(metrics, list):
+            await self.send_error("invalid_request", "metrics must be a list", req_id)
+            return
+
+        values = []
+        rejected = []
+        for metric in metrics:
+            if not metric_catalog.has(metric):
+                rejected.append({"metric": metric, "reason": "not_available"})
+                continue
+            try:
+                value = await metric_catalog.collect(metric)
+            except Exception as exc:
+                logger.debug(f"Query failed for {metric}: {exc}")
+                rejected.append({"metric": metric, "reason": "collection_failed"})
+                continue
+            values.append(
+                {
+                    "metric": metric,
+                    "value": value,
+                    "unit": metric_catalog.unit(metric),
+                }
+            )
+
+        await self.send_json(
+            {
+                "type": "query_result",
+                "id": req_id,
+                "ts_ms": now_ts_ms(),
+                "values": values,
+                "rejected": rejected,
+            }
+        )
+
+    async def handle_subscribe(self, message: Dict[str, Any]):
+        req_id = message.get("id")
+        subscriptions = message.get("subscriptions", [])
+        if not isinstance(subscriptions, list):
+            await self.send_error(
+                "invalid_request", "subscriptions must be a list", req_id
+            )
+            return
+        if len(subscriptions) > MAX_SUBSCRIPTIONS:
+            await self.send_error(
+                "too_many_subscriptions",
+                "subscription count exceeds limit",
+                req_id,
+            )
+            return
+
+        accepted = []
+        rejected = []
+        for subscription in subscriptions:
+            metric = subscription.get("metric")
+            interval = subscription.get("interval_ms", MIN_INTERVAL_MS)
+            if not metric_catalog.has(metric):
+                rejected.append({"metric": metric, "reason": "not_available"})
+                continue
+            if not metric_catalog.can_subscribe(metric):
+                rejected.append({"metric": metric, "reason": "not_subscribable"})
+                continue
+            if not isinstance(interval, (int, float)) or interval <= 0:
+                rejected.append({"metric": metric, "reason": "invalid_interval"})
+                continue
+
+            clamped = max(MIN_INTERVAL_MS, min(int(interval), MAX_INTERVAL_MS))
+            accepted.append({"metric": metric, "interval_ms": clamped})
+            self.subscriptions.add(metric)
+            probe_registry.subscribe(
+                metric=metric,
+                interval_ms=clamped,
+                client_id=self.client_id,
+                send=self.send_json,
+            )
+
+        await self.send_json(
+            {
+                "type": "subscribed",
+                "id": req_id,
+                "ts_ms": now_ts_ms(),
+                "accepted": accepted,
+                "rejected": rejected,
+            }
+        )
+
+    async def handle_unsubscribe(self, message: Dict[str, Any]):
+        req_id = message.get("id")
+        metrics = message.get("metrics", [])
+        if not isinstance(metrics, list):
+            await self.send_error("invalid_request", "metrics must be a list", req_id)
+            return
+
+        removed = []
+        for metric in metrics:
+            if metric not in self.subscriptions:
+                continue
+            self.subscriptions.remove(metric)
+            probe_registry.unsubscribe(metric=metric, client_id=self.client_id)
+            removed.append(metric)
+
+        await self.send_json(
+            {
+                "type": "unsubscribed",
+                "id": req_id,
+                "ts_ms": now_ts_ms(),
+                "removed": removed,
+            }
+        )
+
+
+@app.websocket("/ws")
+async def ws_handle():
+    await websocket.accept()
+    session = WebSocketSession()
+
     if not check_basic_auth(websocket.headers.get("Authorization")):
-        await websocket.accept()
-        await send_error_local("unauthorized", "Unauthorized")
+        await session.send_error("unauthorized", "Unauthorized")
         await websocket.close(1008, "Unauthorized")
         return
 
-    await websocket.accept()
-
-    if len(client_pool) >= MAX_CLIENTS:
-        await send_error_local("too_many_clients", "Too many clients connected")
+    if len(active_client_ids) >= MAX_CLIENTS:
+        await session.send_error("too_many_clients", "Too many clients connected")
         await websocket.close(1013, "Too many clients connected")
         return
 
-    client_id = str(uuid.uuid4())
-    state = {"subscriptions": set()}
-    client_pool[client_id] = state
-    logger.debug(f"Client {client_id} connected")
-
-    try:
-        while True:
-            raw = await websocket.receive()
-            logger.debug(f"Received: {raw}")
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                await send_error_local("invalid_json", "Invalid JSON payload")
-                continue
-
-            msg_type = msg.get("type")
-            req_id = msg.get("id")
-
-            if msg_type == "hello":
-                proto_min = int(msg.get("proto_min", PROTOCOL_VERSION))
-                proto_max = int(msg.get("proto_max", PROTOCOL_VERSION))
-                if proto_min > PROTOCOL_VERSION or proto_max < PROTOCOL_VERSION:
-                    await send_error_local(
-                        "unsupported_proto", "Protocol version not supported", req_id
-                    )
-                    continue
-                await send_json_local(
-                    {
-                        "type": "welcome",
-                        "id": req_id,
-                        "ts_ms": now_ts_ms(),
-                        "proto": PROTOCOL_VERSION,
-                        "server": {"name": "dashb", "version": "0.1.0"},
-                        "capabilities": {
-                            "auth": "basic" if username and password else "none",
-                            "tls": False,
-                            "max_subscriptions": MAX_SUBSCRIPTIONS,
-                            "min_interval_ms": MIN_INTERVAL_MS,
-                            "max_interval_ms": MAX_INTERVAL_MS,
-                        },
-                    }
-                )
-                await send_json_local(
-                    probe_info.build_server_info_payload(SUPPORTED_METRICS)
-                )
-                continue
-
-            if msg_type == "ping":
-                await send_json_local(
-                    {"type": "pong", "id": req_id, "ts_ms": now_ts_ms()}
-                )
-                continue
-
-            if msg_type == "subscribe":
-                subs = msg.get("subscriptions", [])
-                if not isinstance(subs, list):
-                    await send_error_local(
-                        "invalid_request", "subscriptions must be a list", req_id
-                    )
-                    continue
-
-                accepted: List[Dict[str, Any]] = []
-                rejected: List[Dict[str, str]] = []
-
-                if len(subs) > MAX_SUBSCRIPTIONS:
-                    await send_error_local(
-                        "too_many_subscriptions",
-                        "subscription count exceeds limit",
-                        req_id,
-                    )
-                    continue
-
-                for sub in subs:
-                    metric = sub.get("metric")
-                    interval = sub.get("interval_ms", MIN_INTERVAL_MS)
-                    parsed = parse_metric(metric)
-                    if not parsed:
-                        rejected.append({"metric": metric, "reason": "not_available"})
-                        continue
-                    if not isinstance(interval, (int, float)) or interval <= 0:
-                        rejected.append(
-                            {"metric": metric, "reason": "invalid_interval"}
-                        )
-                        continue
-                    clamped = max(MIN_INTERVAL_MS, min(int(interval), MAX_INTERVAL_MS))
-                    accepted.append({"metric": metric, "interval_ms": clamped})
-                    state["subscriptions"].add(metric)
-                    probe_registry.subscribe(
-                        metric=parsed["base"],
-                        params=parsed["params"],
-                        interval_ms=clamped,
-                        client_id=client_id,
-                        send=send_json_local,
-                    )
-
-                await send_json_local(
-                    {
-                        "type": "subscribed",
-                        "id": req_id,
-                        "ts_ms": now_ts_ms(),
-                        "accepted": accepted,
-                        "rejected": rejected,
-                    }
-                )
-                continue
-
-            if msg_type == "unsubscribe":
-                metrics = msg.get("metrics", [])
-                if not isinstance(metrics, list):
-                    await send_error_local(
-                        "invalid_request", "metrics must be a list", req_id
-                    )
-                    continue
-
-                removed: List[str] = []
-                for metric in metrics:
-                    parsed = parse_metric(metric)
-                    if not parsed:
-                        continue
-                    if metric in state["subscriptions"]:
-                        state["subscriptions"].remove(metric)
-                    probe_registry.unsubscribe(
-                        metric=parsed["base"],
-                        params=parsed["params"],
-                        client_id=client_id,
-                    )
-                    removed.append(metric)
-
-                await send_json_local(
-                    {
-                        "type": "unsubscribed",
-                        "id": req_id,
-                        "ts_ms": now_ts_ms(),
-                        "removed": removed,
-                    }
-                )
-                continue
-
-            await send_error_local(
-                "unknown_type", f"Unknown message type: {msg_type}", req_id
-            )
-    finally:
-        probe_registry.unsubscribe_client(client_id)
-        client_pool.pop(client_id, None)
-        logger.debug(f"Client {client_id} disconnected")
+    await session.run()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,10 @@ from typing import Any, Dict, Optional
 
 import psutil
 
+from dashb.probe.types import MetricMap
+
+NETWORK_FIELDS = ("bytes_sent_per_s", "bytes_recv_per_s")
+
 
 class NetworkDelta:
     CACHE_WINDOW_S = 0.1
@@ -82,4 +86,60 @@ def get_network_bytes_per_second(iface: Optional[str] = None) -> Dict[str, float
     return _delta.bytes_per_second(iface)
 
 
-__all__ = ["get_network_bytes_per_second"]
+def get_supported_metrics() -> MetricMap:
+    metrics: MetricMap = {
+        "network.interfaces": {
+            "unit": "list",
+            "kind": "info",
+            "subscribable": False,
+        }
+    }
+
+    for field in NETWORK_FIELDS:
+        metrics[f"network.{field}"] = {
+            "unit": "bytes/s",
+            "kind": "gauge",
+            "subscribable": True,
+        }
+
+    for iface in psutil.net_io_counters(pernic=True).keys():
+        for field in NETWORK_FIELDS:
+            metrics[f"network.[{iface}].{field}"] = {
+                "unit": "bytes/s",
+                "kind": "gauge",
+                "subscribable": True,
+            }
+
+    return metrics
+
+
+def supports_metric(metric: str) -> bool:
+    return metric == "network.interfaces" or metric.startswith("network.")
+
+
+def _network_interfaces() -> list[dict[str, Any]]:
+    interfaces = []
+    for name, addrs in psutil.net_if_addrs().items():
+        addresses = [addr.address for addr in addrs if addr.address]
+        interfaces.append({"name": name, "addresses": addresses})
+    return interfaces
+
+
+def collect_metric(metric: str) -> Any:
+    if metric == "network.interfaces":
+        return _network_interfaces()
+
+    iface: Optional[str] = None
+    field = metric.split(".")[-1]
+    if metric.startswith("network.["):
+        iface = metric.split("]", 1)[0].removeprefix("network.[")
+
+    return get_network_bytes_per_second(iface).get(field, 0.0)
+
+
+__all__ = [
+    "collect_metric",
+    "get_network_bytes_per_second",
+    "get_supported_metrics",
+    "supports_metric",
+]

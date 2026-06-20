@@ -1,40 +1,57 @@
-"""Probe dispatcher for supported metrics."""
+"""Probe metric catalog.
 
-from typing import Any, Dict
+Each probe module owns platform detection for the metrics it can provide.
+The server builds this catalog once at startup and treats it as the sole
+authority for metric validation and collection.
+"""
 
-from dashb.probe import cpu, memory, network, gpu
+from dataclasses import dataclass
+from typing import Any
 
+from dashb.probe import cpu, gpu, info, memory, network
+from dashb.probe.types import MetricMap, MetricMeta, ProbeProvider
 
-async def collect_metric(metric: str, params: Dict[str, Any]) -> Any:
-    # CPU
-    if metric == "cpu.utilization":
-        return cpu.get_cpu_percent(percpu=False)
-    if metric == "cpu.per_core.utilization":
-        return cpu.get_cpu_percent(percpu=True)
-
-    # Memory
-    if metric == "memory.used_bytes":
-        return memory.get_virtual_memory()["used"]
-    if metric == "memory.total_bytes":
-        return memory.get_virtual_memory()["total"]
-    if metric == "memory.utilization":
-        return memory.get_virtual_memory()["percent"]
-
-    # Network
-    if metric.startswith("network"):
-        iface = params.get("iface")
-        # metric endswith field name
-        field = metric.split(".")[-1]
-        delta = network.get_network_bytes_per_second(iface)
-        return delta.get(field, 0.0)
-
-    # GPU
-    if metric.startswith("gpu"):
-        index = params.get("index")
-        field = metric.split(".")[-1]
-        return gpu.get_gpu_metric(field, index=index)
-
-    return None
+PROBE_MODULES: tuple[ProbeProvider, ...] = (cpu, memory, network, gpu, info)
 
 
-__all__ = ["collect_metric"]
+@dataclass(frozen=True)
+class MetricCatalog:
+    metrics: MetricMap
+
+    def has(self, metric: Any) -> bool:
+        return isinstance(metric, str) and metric in self.metrics
+
+    def meta(self, metric: Any) -> MetricMeta:
+        if not isinstance(metric, str):
+            return {}
+        return self.metrics.get(metric, {})
+
+    def can_subscribe(self, metric: Any) -> bool:
+        return self.has(metric) and self.meta(metric).get("subscribable") is not False
+
+    def unit(self, metric: Any) -> Any:
+        return self.meta(metric).get("unit")
+
+    def as_payload(self) -> list[dict[str, Any]]:
+        return [{"metric": name, **meta} for name, meta in self.metrics.items()]
+
+    async def collect(self, metric: Any) -> Any:
+        if not self.has(metric):
+            raise KeyError(metric)
+        for module in PROBE_MODULES:
+            if module.supports_metric(metric):
+                return module.collect_metric(metric)
+        raise KeyError(metric)
+
+
+def build_metric_catalog() -> MetricCatalog:
+    metrics: MetricMap = {}
+    for module in PROBE_MODULES:
+        metrics.update(module.get_supported_metrics())
+    return MetricCatalog(dict(sorted(metrics.items())))
+
+
+__all__ = [
+    "MetricCatalog",
+    "build_metric_catalog",
+]
