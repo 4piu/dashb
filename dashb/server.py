@@ -1,8 +1,11 @@
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import logging.config
+import math
 import os
 import time
 import uuid
@@ -56,11 +59,16 @@ logger = logging.getLogger(__name__)
 # Auth credentials (can be empty to disable auth)
 username = os.getenv("USERNAME", None)
 password = os.getenv("PASSWORD", None)
+AUTH_COOKIE_NAME = "dashb_auth"
+
+
+def auth_enabled() -> bool:
+    return bool(username and password)
 
 
 def check_basic_auth(auth_header: Optional[str]) -> bool:
     """Return True if authorized or auth disabled, False otherwise."""
-    if not username or not password:
+    if not auth_enabled():
         return True  # Auth disabled
 
     if not auth_header or not auth_header.startswith("Basic "):
@@ -74,15 +82,63 @@ def check_basic_auth(auth_header: Optional[str]) -> bool:
         return False
 
 
+def auth_cookie_value() -> str:
+    assert username is not None
+    assert password is not None
+    return hmac.new(
+        password.encode("utf-8"),
+        username.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def check_auth_cookie(cookie_value: Optional[str]) -> bool:
+    if not auth_enabled():
+        return True
+    if not cookie_value:
+        return False
+    return hmac.compare_digest(cookie_value, auth_cookie_value())
+
+
+def parse_cookie_header(cookie_header: Optional[str]) -> dict[str, str]:
+    if not cookie_header:
+        return {}
+    cookies = {}
+    for part in cookie_header.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        cookies[key.strip()] = value.strip()
+    return cookies
+
+
 @app.before_request
 async def requires_auth():
-    auth_header = request.headers.get("Authorization")
-    if not check_basic_auth(auth_header):
+    if not auth_enabled():
+        return None
+    if check_auth_cookie(request.cookies.get(AUTH_COOKIE_NAME)):
+        return None
+    if not check_basic_auth(request.headers.get("Authorization")):
         return (
             "Unauthorized",
             401,
             {"WWW-Authenticate": 'Basic realm="Login Required"'},
         )
+    return None
+
+
+@app.after_request
+async def set_auth_cookie(response):
+    if auth_enabled() and check_basic_auth(request.headers.get("Authorization")):
+        response.set_cookie(
+            AUTH_COOKIE_NAME,
+            auth_cookie_value(),
+            httponly=True,
+            samesite="Lax",
+            secure=request.is_secure,
+            max_age=60 * 60 * 24 * 30,
+        )
+    return response
 
 
 @app.route("/")
@@ -132,6 +188,16 @@ def now_ts_ms() -> int:
     return int(time.time() * 1000)
 
 
+def to_json_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, list):
+        return [to_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: to_json_safe(item) for key, item in value.items()}
+    return value
+
+
 active_client_ids: Set[str] = set()
 metric_catalog = build_metric_catalog()
 probe_registry = ProbeRegistry(metric_catalog)
@@ -149,6 +215,11 @@ class WebSocketSession:
         try:
             while True:
                 await self.handle_raw_message(await websocket.receive())
+        except asyncio.CancelledError:
+            logger.debug(f"Client {self.client_id} websocket task cancelled")
+            raise
+        except Exception:
+            logger.exception(f"Client {self.client_id} websocket session failed")
         finally:
             probe_registry.unsubscribe_client(self.client_id)
             active_client_ids.discard(self.client_id)
@@ -156,7 +227,7 @@ class WebSocketSession:
 
     async def send_json(self, message: Dict[str, Any]):
         async with self.send_lock:
-            await websocket.send(json.dumps(message))
+            await websocket.send(json.dumps(to_json_safe(message), allow_nan=False))
 
     async def send_error(
         self, code: str, message: str, req_id: Optional[str] = None
@@ -200,6 +271,9 @@ class WebSocketSession:
         req_id = message.get("id")
         proto_min = int(message.get("proto_min", PROTOCOL_VERSION))
         proto_max = int(message.get("proto_max", PROTOCOL_VERSION))
+        logger.debug(
+            f"Client {self.client_id} hello proto_min={proto_min} proto_max={proto_max}"
+        )
         if proto_min > PROTOCOL_VERSION or proto_max < PROTOCOL_VERSION:
             await self.send_error(
                 "unsupported_proto", "Protocol version not supported", req_id
@@ -229,6 +303,9 @@ class WebSocketSession:
                 "ts_ms": now_ts_ms(),
                 "metrics": metric_catalog.as_payload(),
             }
+        )
+        logger.debug(
+            f"Client {self.client_id} server_info metrics={len(metric_catalog.metrics)}"
         )
 
     async def handle_ping(self, message: Dict[str, Any]):
@@ -271,6 +348,9 @@ class WebSocketSession:
                 "values": values,
                 "rejected": rejected,
             }
+        )
+        logger.debug(
+            f"Client {self.client_id} query_result values={len(values)} rejected={len(rejected)}"
         )
 
     async def handle_subscribe(self, message: Dict[str, Any]):
@@ -323,6 +403,9 @@ class WebSocketSession:
                 "rejected": rejected,
             }
         )
+        logger.debug(
+            f"Client {self.client_id} subscribed accepted={len(accepted)} rejected={len(rejected)}"
+        )
 
     async def handle_unsubscribe(self, message: Dict[str, Any]):
         req_id = message.get("id")
@@ -354,7 +437,11 @@ async def ws_handle():
     await websocket.accept()
     session = WebSocketSession()
 
-    if not check_basic_auth(websocket.headers.get("Authorization")):
+    cookies = parse_cookie_header(websocket.headers.get("Cookie"))
+    if not (
+        check_basic_auth(websocket.headers.get("Authorization"))
+        or check_auth_cookie(cookies.get(AUTH_COOKIE_NAME))
+    ):
         await session.send_error("unauthorized", "Unauthorized")
         await websocket.close(1008, "Unauthorized")
         return

@@ -143,8 +143,17 @@ class MainWindow(QMainWindow):
 
         host = self.settings_window.settings.value("host", "0.0.0.0", type=str)
         port = self.settings_window.settings.value("port", 8080, type=int)
-        username = self.settings_window.settings.value("username", "", type=str)
-        password = self.settings_window.settings.value("password", "", type=str)
+        basic_auth = self.settings_window.settings.value("basic_auth", False, type=bool)
+        username = (
+            self.settings_window.settings.value("username", "", type=str)
+            if basic_auth
+            else ""
+        )
+        password = (
+            self.settings_window.settings.value("password", "", type=str)
+            if basic_auth
+            else ""
+        )
 
         # Run server.py in QProcess
         self.server_process = QProcess()

@@ -37,6 +37,8 @@ function copyThemeManifests() {
 export default defineConfig({
   base: './',
   build: {
+    target: 'safari15',
+    cssTarget: 'safari15',
     outDir: 'dist',
     rollupOptions: {
       input: {

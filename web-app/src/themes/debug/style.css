@@ -43,6 +43,15 @@ body,
   margin: 2px 0;
 }
 
+.debug-reconnect {
+  margin: 8px 0 4px;
+  border: 1px solid #00ff66;
+  background: #021a08;
+  color: #00ff66;
+  font: inherit;
+  cursor: pointer;
+}
+
 .metric-list {
   display: grid;
   gap: 8px;
