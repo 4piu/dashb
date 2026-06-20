@@ -8,10 +8,10 @@ authority for metric validation and collection.
 from dataclasses import dataclass
 from typing import Any
 
-from dashb.probe import cpu, gpu, info, memory, network
+from dashb.probe import cpu, disk, gpu, info, memory, network
 from dashb.probe.types import MetricMap, MetricMeta, ProbeProvider
 
-PROBE_MODULES: tuple[ProbeProvider, ...] = (cpu, memory, network, gpu, info)
+PROBE_MODULES: tuple[ProbeProvider, ...] = (cpu, memory, network, disk, gpu, info)
 
 
 @dataclass(frozen=True)
