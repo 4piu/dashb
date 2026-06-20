@@ -4,6 +4,7 @@ import subprocess
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
+from dashb.probe import lhm
 from dashb.probe.types import MetricMap
 
 try:
@@ -14,6 +15,7 @@ except ImportError:
     NVML_AVAILABLE = False
 
 _nvml_inited = False
+_lhm_gpu_sensor_ids: dict[int, dict[str, str]] | None = None
 
 GPU_FIELDS = {
     "utilization": {"unit": "%", "kind": "gauge"},
@@ -110,6 +112,34 @@ def _gpus_from_wmic() -> List[Dict[str, Any]]:
     return devices
 
 
+def _gpus_from_lhm() -> List[Dict[str, Any]]:
+    devices_by_name: dict[str, Dict[str, Any]] = {}
+    for sensor in lhm.list_sensors():
+        if not sensor.hardware_type.lower().startswith("gpu"):
+            continue
+        key = _normalize_gpu_name(sensor.hardware_name)
+        if key in devices_by_name:
+            continue
+        devices_by_name[key] = {
+            "index": len(devices_by_name),
+            "name": sensor.hardware_name,
+            "vendor": _vendor_from_lhm_sensor(sensor),
+            "provider": "lhm",
+        }
+    return list(devices_by_name.values())
+
+
+def _vendor_from_lhm_sensor(sensor: lhm.Sensor) -> str:
+    hardware_type = sensor.hardware_type.lower()
+    if "nvidia" in hardware_type:
+        return "nvidia"
+    if "amd" in hardware_type or "ati" in hardware_type:
+        return "amd"
+    if "intel" in hardware_type:
+        return "intel"
+    return _vendor_from_name(sensor.hardware_name)
+
+
 def get_gpu_info() -> List[Dict[str, Any]]:
     devices: List[Dict[str, Any]] = []
 
@@ -119,8 +149,33 @@ def get_gpu_info() -> List[Dict[str, Any]]:
     if not nvidia_nvml:
         devices.extend(_nvidia_from_smi())
 
+    devices.extend(_gpus_from_lhm())
     devices.extend(_gpus_from_wmic())
-    return devices
+    return _dedupe_devices(devices)
+
+
+def _dedupe_devices(devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: List[Dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for device in devices:
+        key = (
+            str(device.get("vendor") or "other"),
+            _normalize_gpu_name(str(device.get("name") or "")),
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(device)
+
+    return [
+        {**device, "index": index}
+        for index, device in enumerate(deduped)
+    ]
+
+
+def _normalize_gpu_name(name: str) -> str:
+    return " ".join(name.casefold().split())
 
 
 def _ensure_nvml() -> bool:
@@ -209,6 +264,93 @@ def _smi_metric(field: str, index: Optional[int]) -> Any:
     return val
 
 
+def _lhm_gpu_metric(field: str, index: int) -> Any:
+    sensor_id = _get_lhm_gpu_sensor_ids().get(index, {}).get(field)
+    if not sensor_id:
+        return None
+    value = lhm.read_sensor(sensor_id)
+    if value is None:
+        return None
+    if field in {"memory_used_bytes", "memory_total_bytes"}:
+        return value * 1024 * 1024
+    return value
+
+
+def _get_lhm_gpu_sensor_ids() -> dict[int, dict[str, str]]:
+    global _lhm_gpu_sensor_ids
+
+    if _lhm_gpu_sensor_ids is not None:
+        return _lhm_gpu_sensor_ids
+
+    sensors_by_hardware = _lhm_sensors_by_hardware()
+    mapped: dict[int, dict[str, str]] = {}
+    for device in _gpu_inventory():
+        index = device.get("index")
+        if not isinstance(index, int):
+            continue
+        sensors = sensors_by_hardware.get(
+            _normalize_gpu_name(str(device.get("name") or "")),
+            [],
+        )
+        if not sensors:
+            continue
+        mapped[index] = _map_lhm_gpu_sensors(sensors)
+
+    _lhm_gpu_sensor_ids = mapped
+    return mapped
+
+
+def _lhm_sensors_by_hardware() -> dict[str, list[lhm.Sensor]]:
+    sensors_by_hardware: dict[str, list[lhm.Sensor]] = {}
+    for sensor in lhm.list_sensors():
+        if not sensor.hardware_type.lower().startswith("gpu"):
+            continue
+        key = _normalize_gpu_name(sensor.hardware_name)
+        sensors_by_hardware.setdefault(key, []).append(sensor)
+    return sensors_by_hardware
+
+
+def _map_lhm_gpu_sensors(sensors: list[lhm.Sensor]) -> dict[str, str]:
+    mapped: dict[str, str] = {}
+    field_selectors = {
+        "utilization": (("Load",), ("gpu core",)),
+        "memory_used_bytes": (("SmallData", "Data"), ("gpu memory used",)),
+        "memory_total_bytes": (("SmallData", "Data"), ("gpu memory total",)),
+        "temperature_c": (("Temperature",), ("gpu core",)),
+        "power_draw_w": (("Power",), ("package", "board", "power")),
+        "fan_speed": (("Control",), ("gpu fan", "fan")),
+        "core_clock_mhz": (("Clock",), ("gpu core",)),
+        "memory_clock_mhz": (("Clock",), ("gpu memory",)),
+    }
+    for field, (sensor_types, name_contains) in field_selectors.items():
+        sensor = _first_lhm_sensor(
+            sensors,
+            sensor_types=sensor_types,
+            name_contains=name_contains,
+        )
+        if sensor:
+            mapped[field] = sensor.id
+    return mapped
+
+
+def _first_lhm_sensor(
+    sensors: list[lhm.Sensor],
+    *,
+    sensor_types: tuple[str, ...],
+    name_contains: tuple[str, ...],
+) -> lhm.Sensor | None:
+    fallback: lhm.Sensor | None = None
+    for sensor in sensors:
+        if sensor.type not in sensor_types:
+            continue
+        if fallback is None:
+            fallback = sensor
+        name = sensor.name.lower()
+        if any(part in name for part in name_contains):
+            return sensor
+    return fallback
+
+
 @lru_cache(maxsize=1)
 def _gpu_inventory():
     return get_gpu_info()
@@ -228,11 +370,19 @@ def _nvidia_indices() -> list[int]:
     )
 
 
+def _gpu_indices() -> list[int]:
+    return sorted(
+        int(device["index"])
+        for device in _gpu_inventory()
+        if isinstance(device.get("index"), int)
+    )
+
+
 def get_supported_metrics() -> MetricMap:
     metrics: MetricMap = {
         "gpu.devices": {"unit": "list", "kind": "info", "subscribable": False}
     }
-    indices = _nvidia_indices()
+    indices = _gpu_indices()
     if not indices:
         return metrics
 
@@ -263,16 +413,18 @@ def _parse_gpu_metric(metric: str) -> tuple[str, Optional[int]]:
 
 def get_gpu_metric(field: str, index: Optional[int] = None) -> Any:
     idx = 0 if index is None else int(index)
-    if not _has_nvidia(idx):
-        return None
-    if _ensure_nvml():
+    if _has_nvidia(idx) and _ensure_nvml():
         try:
             val = _nvml_metric(field, idx)
         except Exception:
             val = None
         if val is not None:
             return val
-    return _smi_metric(field, idx)
+    if _has_nvidia(idx):
+        val = _smi_metric(field, idx)
+        if val is not None:
+            return val
+    return _lhm_gpu_metric(field, idx)
 
 
 def collect_metric(metric: str) -> Any:

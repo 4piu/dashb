@@ -45,7 +45,7 @@ function formatValue(value: unknown): string {
   }
 
   if (typeof value === 'number') {
-    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+    return Number.isInteger(value) ? String(value) : value.toFixed(3);
   }
 
   if (value === null || value === undefined) {

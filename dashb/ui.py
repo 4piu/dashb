@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QMenu,
 )
 from PySide6.QtGui import QIcon, QIntValidator
-from PySide6.QtCore import QSettings, QProcess, QTimer
+from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer
 
 # Set up logging
 logging.config.dictConfig(
@@ -151,8 +151,7 @@ class MainWindow(QMainWindow):
         self.server_process.setProgram(sys.executable)
 
         # pass config as environment vars to the server.py script
-        # env = QProcessEnvironment.systemEnvironment()
-        env = self.server_process.processEnvironment()
+        env = QProcessEnvironment.systemEnvironment()
         env.insert("HOST", host)
         env.insert("PORT", str(port))
         env.insert("USERNAME", username)
