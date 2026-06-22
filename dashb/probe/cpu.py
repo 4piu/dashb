@@ -20,7 +20,7 @@ LHM_CPU_METRICS = {
     },
     "cpu.per_core_vid_v": {"unit": "V", "kind": "gauge", "subscribable": True},
     "cpu.package_power_w": {"unit": "W", "kind": "gauge", "subscribable": True},
-    "cpu.core_average_clock_mhz": {
+    "cpu.max_core_clock_mhz": {
         "unit": "MHz",
         "kind": "gauge",
         "subscribable": True,
@@ -78,8 +78,8 @@ def collect_metric(metric: str) -> float | int | list[float]:
         return _read_lhm_array(metric)
     if metric == "cpu.package_power_w":
         return _read_lhm_scalar(metric)
-    if metric == "cpu.core_average_clock_mhz":
-        return _average(_read_lhm_array("cpu.per_core_clock_mhz"))
+    if metric == "cpu.max_core_clock_mhz":
+        return _max(_read_lhm_array("cpu.per_core_clock_mhz"))
     if metric == "cpu.per_core_clock_mhz":
         return _read_lhm_array(metric)
     raise KeyError(metric)
@@ -144,9 +144,7 @@ def _get_lhm_cpu_sensor_ids() -> dict[str, str | list[str]]:
         sensor_ids["cpu.per_core_clock_mhz"] = [
             sensor.id for sensor in per_core_clocks
         ]
-        sensor_ids["cpu.core_average_clock_mhz"] = [
-            sensor.id for sensor in per_core_clocks
-        ]
+        sensor_ids["cpu.max_core_clock_mhz"] = [sensor.id for sensor in per_core_clocks]
 
     _lhm_cpu_sensor_ids = sensor_ids
     return sensor_ids
@@ -170,6 +168,13 @@ def _average(values: list[float | None]) -> float | None:
     if not valid_values:
         return None
     return sum(valid_values) / len(valid_values)
+
+
+def _max(values: list[float | None]) -> float | None:
+    valid_values = [value for value in values if value is not None]
+    if not valid_values:
+        return None
+    return max(valid_values)
 
 
 def _first_sensor(
