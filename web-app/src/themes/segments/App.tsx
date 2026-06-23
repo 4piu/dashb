@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { type PointerEvent, useEffect, useRef, useState } from 'react';
 
 type MetricMeta = {
   metric: string;
@@ -805,7 +805,8 @@ function drawIoSection(
   width: number,
   height: number,
 ) {
-  drawPanelLabel(ctx, label, x, y, Math.max(10, height * 0.14));
+  const topPadding = Math.max(4, height * 0.035);
+  drawPanelLabel(ctx, label, x, y + topPadding, Math.max(10, height * 0.14));
   const size = Math.max(10, height * 0.22);
   drawIoLine(ctx, rows[0][0], rows[0][1], x, y + height * 0.45, width, size);
   drawIoLine(ctx, rows[1][0], rows[1][1], x, y + height * 0.78, width, size);
@@ -944,6 +945,9 @@ function drawDashboard(
 
 function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [resizeTick, setResizeTick] = useState(0);
   const { values, coreHistory } = useDashbMetrics();
 
@@ -967,8 +971,56 @@ function App() {
     };
   }, [values, coreHistory, resizeTick]);
 
-  const requestFullscreen = () => {
+  const clearLongPress = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    pointerStartRef.current = null;
+  };
+
+  const getLocalPointer = (event: PointerEvent<HTMLElement>) => {
+    const nativeEvent = event.nativeEvent;
+    if (event.target instanceof HTMLCanvasElement) {
+      return { x: nativeEvent.offsetX, y: nativeEvent.offsetY };
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLElement>) => {
+    if (isMenuOpen) {
+      setIsMenuOpen(false);
+      return;
+    }
+    if (event.button !== 0 && event.pointerType === 'mouse') {
+      return;
+    }
+    const position = getLocalPointer(event);
+    pointerStartRef.current = position;
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      setIsMenuOpen(true);
+    }, 550);
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLElement>) => {
+    if (!pointerStartRef.current) {
+      return;
+    }
+    const position = getLocalPointer(event);
+    const distance = Math.hypot(position.x - pointerStartRef.current.x, position.y - pointerStartRef.current.y);
+    if (distance > 12) {
+      clearLongPress();
+    }
+  };
+
+  const toggleFullscreen = () => {
     const root = document.documentElement;
+    setIsMenuOpen(false);
     if (document.fullscreenElement) {
       void document.exitFullscreen();
       return;
@@ -977,11 +1029,26 @@ function App() {
   };
 
   return (
-    <main className="segments-screen">
+    <main
+      className="segments-screen"
+      onContextMenu={(event) => event.preventDefault()}
+      onPointerCancel={clearLongPress}
+      onPointerDown={handlePointerDown}
+      onPointerLeave={clearLongPress}
+      onPointerMove={handlePointerMove}
+      onPointerUp={clearLongPress}
+    >
       <canvas ref={canvasRef} className="segments-canvas" />
-      <button className="fullscreen-button" type="button" onClick={requestFullscreen}>
-        fullscreen
-      </button>
+      {isMenuOpen && (
+        <div
+          className="segments-menu"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button className="segments-menu-button" type="button" onClick={toggleFullscreen}>
+            {document.fullscreenElement ? 'Exit fullscreen' : 'Enter fullscreen'}
+          </button>
+        </div>
+      )}
     </main>
   );
 }

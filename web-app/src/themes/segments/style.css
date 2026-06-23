@@ -45,6 +45,8 @@ button {
   height: 100vh;
   overflow: hidden;
   background: #000;
+  touch-action: none;
+  user-select: none;
 }
 
 .segments-canvas {
@@ -54,24 +56,36 @@ button {
   background: #000;
 }
 
-.fullscreen-button {
+.segments-menu {
   position: absolute;
-  right: 0;
-  bottom: 0;
+  top: 50%;
+  left: 50%;
   z-index: 2;
-  padding: 6px 8px;
-  border: 0;
-  background: transparent;
-  color: #f4f7f2;
-  font-size: clamp(9px, 1.6vmin, 13px);
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  opacity: 0.14;
+  width: min(320px, calc(100% - 32px));
+  max-height: min(70%, 420px);
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid rgb(244 247 242 / 50%);
+  background: rgb(72 76 72 / 94%);
+  box-shadow: 0 0 24px rgb(244 247 242 / 24%);
+  transform: translate(-50%, -50%);
 }
 
-.fullscreen-button:hover {
-  background: rgb(0 0 0 / 50%);
-  opacity: 0.9;
+.segments-menu-button {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgb(244 247 242 / 30%);
+  background: rgb(0 0 0 / 22%);
+  color: #f4f7f2;
+  font-size: clamp(10px, 1.8vmin, 14px);
+  letter-spacing: 0.08em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.segments-menu-button:hover {
+  background: rgb(0 0 0 / 36%);
 }
 
 @media (orientation: portrait) {
@@ -80,10 +94,5 @@ button {
     height: 100vw;
     transform: rotate(90deg) translateY(-100%);
     transform-origin: top left;
-  }
-
-  .fullscreen-button {
-    right: 0;
-    bottom: 0;
   }
 }
