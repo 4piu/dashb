@@ -1,0 +1,9 @@
+{
+  "id": "segments",
+  "name": "Segmented LED",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "description": "Dark segmented LED/LCD dashboard for compact system monitoring",
+  "author": "",
+  "minServerVersion": "0.1.0"
+}

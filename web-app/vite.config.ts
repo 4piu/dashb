@@ -44,6 +44,7 @@ export default defineConfig({
       input: {
         index: resolve(__dirname, 'index.html'),
         debug: resolve(__dirname, 'theme/debug/index.html'),
+        segments: resolve(__dirname, 'theme/segments/index.html'),
       },
     },
   },
