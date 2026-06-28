@@ -866,22 +866,30 @@ function drawCoreCell(
   history: number[],
 ) {
   const labelSize = Math.max(7, Math.min(rect.h * 0.3, rect.w * 0.075));
-  const valueSize = Math.max(8, Math.min(rect.h * 0.34, rect.w * 0.085));
-  const y = rect.y + rect.h * 0.52;
-  drawText(ctx, `C${index}`, rect.x, y, labelSize, 'left');
-  const valueW = valueSize * 2.55;
-  const valueX = rect.x + rect.w - labelSize * 0.3;
-  drawSegmentValue(ctx, { digits: value === null ? '--' : String(Math.round(value)), unit: '%' }, '188', valueX, y, valueSize, {
-    align: 'right',
-    maxRight: valueX,
+  const valueSize = Math.max(8, Math.min(rect.h * 0.3, rect.w * 0.085));
+  const chartY = rect.y + rect.h * 0.16;
+  const chartH = rect.h * 0.68;
+  ctx.font = font(labelSize);
+  const labelW = ctx.measureText(`C${index}`).width;
+  const valueW = valueSize * 2.75;
+  const stackW = Math.max(labelW, valueW);
+  const stackGap = Math.max(3, rect.w * 0.025);
+  ctx.font = font(labelSize);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = COLORS.white;
+  ctx.fillText(`C${index}`, rect.x, chartY);
+  drawSegmentValue(ctx, { digits: value === null ? '--' : String(Math.round(value)), unit: '%' }, '188', rect.x, chartY + chartH - valueSize * 0.42, valueSize, {
+    align: 'left',
+    maxRight: rect.x + stackW,
     unitLayout: 'percent',
     unitSize: valueSize * 0.52,
   });
   const chart = {
-    x: rect.x + labelSize * 1.7,
-    y: rect.y + rect.h * 0.16,
-    w: Math.max(1, valueX - valueW - (rect.x + labelSize * 1.7)),
-    h: rect.h * 0.68,
+    x: rect.x + stackW + stackGap,
+    y: chartY,
+    w: Math.max(1, rect.w - stackW - stackGap),
+    h: chartH,
   };
   drawCoreHistory(ctx, chart, history);
 }
