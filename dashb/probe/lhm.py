@@ -20,6 +20,11 @@ HELPER_ENV = "DASHB_LHM_HELPER_PATH"
 LIST_CACHE_TTL_S = 30
 READ_CACHE_TTL_S = 0.25
 CONNECT_TIMEOUT_S = 60
+# How long to wait when reconnecting to a helper we've already launched
+# before (e.g. after a sleep/resume connection drop). Short, since if the
+# helper is truly gone the connection is refused almost immediately; this
+# just gives a just-resumed helper a brief moment to start listening again.
+RECONNECT_TIMEOUT_S = 3
 _NO_WINDOW_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
@@ -166,10 +171,25 @@ class ElevatedLhmClient:
         self.token = secrets.token_urlsafe(32)
         self.port = _free_loopback_port()
         self.last_error: Optional[str] = None
+        # Whether we've ever successfully launched an elevated helper in this
+        # client's lifetime. Once true, a broken connection tries a plain
+        # reconnect to the same port/token first (the helper loops to accept
+        # new connections and only exits on an explicit shutdown or when this
+        # process dies) before falling back to relaunching - which is the
+        # only path that triggers a fresh UAC prompt.
+        self._helper_launched = False
 
     @property
     def helper_commands(self) -> list[list[str]]:
-        return [[str(self.helper_path), "--server", str(self.port), "<token>"]]
+        return [
+            [
+                str(self.helper_path),
+                "--server",
+                str(self.port),
+                "<token>",
+                str(os.getpid()),
+            ]
+        ]
 
     @property
     def command_index(self) -> int:
@@ -224,7 +244,23 @@ class ElevatedLhmClient:
 
     def close(self) -> None:
         with self.lock:
+            # Ask the helper to actually exit rather than just dropping the
+            # socket - since it now loops to accept reconnects, a dropped
+            # socket alone would leave it sitting there waiting for a client
+            # that isn't coming back. This is best-effort: if it fails (or
+            # this process is killed before it runs), WatchOwnerProcess on
+            # the helper side is the guaranteed fallback that still prevents
+            # an orphan.
+            if self.socket is not None and self.writer is not None:
+                try:
+                    self.writer.write(
+                        json.dumps({"type": "shutdown", "token": self.token}) + "\n"
+                    )
+                    self.writer.flush()
+                except OSError:
+                    pass
             self._close_connection()
+            self._helper_launched = False
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
@@ -233,9 +269,21 @@ class ElevatedLhmClient:
             assert self.reader is not None
 
             payload = {**payload, "token": self.token}
-            self.writer.write(json.dumps(payload) + "\n")
-            self.writer.flush()
-            line = self.reader.readline()
+            try:
+                self.writer.write(json.dumps(payload) + "\n")
+                self.writer.flush()
+                line = self.reader.readline()
+            except OSError as ex:
+                # A dead connection (e.g. the loopback socket or the helper
+                # process itself not surviving a sleep/resume cycle) raises
+                # here rather than returning an empty read. Without clearing
+                # self.socket, _ensure_connection() would keep reusing this
+                # broken connection forever instead of reconnecting.
+                self._close_connection()
+                self.last_error = str(ex)
+                raise RuntimeError(
+                    f"LibreHardwareMonitor elevated helper connection lost: {ex}"
+                ) from ex
             if not line:
                 self._close_connection()
                 raise RuntimeError("LibreHardwareMonitor elevated helper stopped")
@@ -249,8 +297,29 @@ class ElevatedLhmClient:
         if self.socket is not None:
             return
 
+        if self._helper_launched and self._connect(RECONNECT_TIMEOUT_S):
+            # Reused the still-running elevated helper from before (e.g. the
+            # loopback connection merely dropped across a sleep/resume) - no
+            # relaunch, no new UAC prompt.
+            return
+
+        if self._helper_launched:
+            # The quick reconnect above failed, so the previous elevated
+            # process is genuinely gone, not just holding a stale socket.
+            # Rotate the port/token before relaunching so we never race a
+            # not-yet-torn-down previous helper still bound to the old port.
+            self.token = secrets.token_urlsafe(32)
+            self.port = _free_loopback_port()
+
         self._start_elevated_server()
-        deadline = time.monotonic() + CONNECT_TIMEOUT_S
+        self._helper_launched = True
+        if self._connect(CONNECT_TIMEOUT_S):
+            return
+
+        raise RuntimeError(self.last_error or "timed out waiting for elevated helper")
+
+    def _connect(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
         last_error: Optional[Exception] = None
 
         while time.monotonic() < deadline:
@@ -259,13 +328,13 @@ class ElevatedLhmClient:
                 self.socket = sock
                 self.reader = sock.makefile("r", encoding="utf-8", newline="\n")
                 self.writer = sock.makefile("w", encoding="utf-8", newline="\n")
-                return
+                return True
             except OSError as ex:
                 last_error = ex
                 time.sleep(0.25)
 
         self.last_error = str(last_error or "timed out waiting for elevated helper")
-        raise RuntimeError(self.last_error)
+        return False
 
     def _start_elevated_server(self):
         # powershell -Command does not bind trailing argv into $args (that only
@@ -274,7 +343,8 @@ class ElevatedLhmClient:
         # already-quoted values directly into the command text instead.
         quoted_helper = _ps_quote(str(self.helper_path))
         quoted_args = ", ".join(
-            _ps_quote(arg) for arg in ("--server", str(self.port), self.token)
+            _ps_quote(arg)
+            for arg in ("--server", str(self.port), self.token, str(os.getpid()))
         )
         ps_command = (
             f"Start-Process -Verb RunAs -WindowStyle Hidden -FilePath {quoted_helper} "
@@ -346,9 +416,12 @@ def list_sensors(force_refresh: bool = False) -> list[Sensor]:
 def close() -> None:
     """Stop the helper process/connection, if one is running.
 
-    Called on server shutdown so an elevated helper (which cannot be reached
-    by killing the server process, since UAC elevation puts it outside that
-    process tree) is not left running after the server stops.
+    Called on server shutdown to explicitly tell an elevated helper (which
+    lives outside this process's tree, since UAC elevation spawns it
+    separately) to exit rather than sit waiting for a reconnect. This is a
+    fast path only - the helper also watches this process's PID directly and
+    self-terminates if it ever disappears without sending this, so it can
+    never outlive the server as an orphan.
     """
     global _client, _client_checked
 

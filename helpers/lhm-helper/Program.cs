@@ -1,9 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Security.Principal;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 using LibreHardwareMonitor.Hardware;
 
 var jsonOptions = new JsonSerializerOptions
@@ -29,6 +31,15 @@ if (args.Length >= 3 && args[0] == "--server")
 {
     var port = int.Parse(args[1]);
     var token = args[2];
+    if (args.Length >= 4 && int.TryParse(args[3], out var ownerPid))
+    {
+        // The owner (dashb server process) is the sole thing allowed to keep
+        // this elevated helper alive. Watching its PID directly - rather than
+        // relying only on the client explicitly asking us to shut down - means
+        // the helper can never outlive it, even if the owner is killed
+        // ungracefully (crash, taskkill, etc).
+        WatchOwnerProcess(ownerPid);
+    }
     RunServer(port, token);
     computer.Close();
     return;
@@ -75,25 +86,67 @@ computer.Close();
 void RunServer(int port, string token)
 {
     var listener = new TcpListener(IPAddress.Loopback, port);
-    listener.Start(1);
+    listener.Start();
 
-    using var client = listener.AcceptTcpClient();
-    listener.Stop();
-
-    using var stream = client.GetStream();
-    using var reader = new StreamReader(stream);
-    using var writer = new StreamWriter(stream) { AutoFlush = true };
-
-    while (reader.ReadLine() is { } line)
+    // Keep listening across multiple sequential connections instead of
+    // exiting after the first client disconnects. A loopback connection can
+    // drop (e.g. across a Windows sleep/resume cycle) without the owning
+    // dashb server process ever restarting, so the client may come back and
+    // reconnect - staying up lets it do that without a fresh UAC prompt.
+    // WatchOwnerProcess (and an explicit "shutdown" request) are what
+    // actually end this loop.
+    while (true)
     {
-        if (string.IsNullOrWhiteSpace(line))
+        using var client = listener.AcceptTcpClient();
+        using var stream = client.GetStream();
+        using var reader = new StreamReader(stream);
+        using var writer = new StreamWriter(stream) { AutoFlush = true };
+
+        var shuttingDown = false;
+        while (reader.ReadLine() is { } line)
         {
-            continue;
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var response = HandleRequestLine(line, token);
+            writer.WriteLine(JsonSerializer.Serialize(response, jsonOptions));
+            if (response is ShutdownResponse)
+            {
+                shuttingDown = true;
+                break;
+            }
         }
 
-        var response = HandleRequestLine(line, token);
-        writer.WriteLine(JsonSerializer.Serialize(response, jsonOptions));
+        if (shuttingDown)
+        {
+            listener.Stop();
+            return;
+        }
     }
+}
+
+void WatchOwnerProcess(int ownerPid)
+{
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            using var owner = Process.GetProcessById(ownerPid);
+            await owner.WaitForExitAsync();
+        }
+        catch (ArgumentException)
+        {
+            // Owner process was already gone by the time we looked it up.
+        }
+        catch (Exception)
+        {
+            // If the wait itself fails for some other reason, still exit
+            // rather than risk lingering as an orphan.
+        }
+        Environment.Exit(0);
+    });
 }
 
 object HandleRequestLine(string line, string? requiredToken = null)
@@ -129,6 +182,7 @@ object HandleRequest(Request request)
         "debug" => new DebugResponse(IsElevated(), request.DelayMs ?? 250, ReadDebugSamples(request.Ids, request.Cycles ?? 5, request.DelayMs ?? 250)),
         "report" => new ReportResponse(IsElevated(), ReadReports(request.HardwareType)),
         "ping" => new PongResponse(),
+        "shutdown" => new ShutdownResponse(),
         _ => new ErrorResponse("unknown_type", $"Unknown request type: {request.Type}"),
     };
 }
@@ -298,6 +352,13 @@ record ReportResponse(string Type, bool Elevated, List<HardwareReportDto> Report
 record PongResponse(string Type)
 {
     public PongResponse() : this("pong")
+    {
+    }
+}
+
+record ShutdownResponse(string Type)
+{
+    public ShutdownResponse() : this("shutdown_ack")
     {
     }
 }
