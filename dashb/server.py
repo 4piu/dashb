@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional, Set
 from quart import Quart, jsonify, request, send_file, websocket
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
-from dashb.probe import build_metric_catalog
+from dashb.probe import build_metric_catalog, lhm
 from dashb.scheduler import ProbeRegistry
 from dashb.theme import (
     default_webroot,
@@ -485,6 +485,12 @@ if __name__ == "__main__":
         tasks = asyncio.all_tasks(loop=loop)
         for task in tasks:
             task.cancel()
+
+        # Stop the LHM helper process/connection. An elevated helper runs
+        # outside this process's tree (UAC elevation puts it under a
+        # separate parent), so an explicit close is needed for a
+        # deterministic, prompt shutdown on graceful stops.
+        lhm.close()
 
         # Windows-specific proactor cleanup
         if hasattr(loop, "_proactor"):
