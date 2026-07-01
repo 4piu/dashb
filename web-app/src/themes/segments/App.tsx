@@ -135,6 +135,13 @@ const SAMPLING_MS: Record<string, number> = {
 };
 
 const CORE_HISTORY_LIMIT = 36;
+// The server can go away without ever sending a close frame (sleep, abrupt
+// power-off, network drop) - the browser's TCP stack may not notice for a
+// long time. Track how long it's been since we last heard anything and
+// force a reconnect (blanking the display to dashes) once that exceeds a
+// few multiples of the fastest subscription interval.
+const STALE_TIMEOUT_MS = 3000;
+const STALE_CHECK_INTERVAL_MS = 500;
 const COLORS = {
   black: '#000000',
   white: '#f4f7f2',
@@ -221,6 +228,7 @@ function rateValue(value: number | null): FormattedValue {
 function useDashbMetrics() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const lastMessageAtRef = useRef(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [connectionDetail, setConnectionDetail] = useState('');
   const [supportedMetrics, setSupportedMetrics] = useState<Set<string>>(new Set());
@@ -247,7 +255,7 @@ function useDashbMetrics() {
       });
 
       const coreEntry = entries.find(
-        (entry) => entry.metric === 'cpu.per_core.utilization',
+        (entry) => entry.metric === 'cpu.utilization_percore',
       );
       if (coreEntry) {
         const cores = arrayValue(coreEntry.value);
@@ -267,6 +275,11 @@ function useDashbMetrics() {
       }
     };
 
+    const resetLiveData = () => {
+      setValues({});
+      setCoreHistory([]);
+    };
+
     const connect = () => {
       clearReconnect();
       setConnectionState('connecting');
@@ -278,6 +291,7 @@ function useDashbMetrics() {
       wsRef.current = socket;
 
       socket.addEventListener('open', () => {
+        lastMessageAtRef.current = Date.now();
         setConnectionState('connected');
         setConnectionDetail('online');
         socket.send(
@@ -298,6 +312,7 @@ function useDashbMetrics() {
         if (wsRef.current !== socket) {
           return;
         }
+        lastMessageAtRef.current = Date.now();
 
         let message: MetricMessage;
         try {
@@ -379,6 +394,7 @@ function useDashbMetrics() {
         wsRef.current = null;
         setConnectionState('disconnected');
         setConnectionDetail(`closed ${event.code}`);
+        resetLiveData();
         if (!cancelled) {
           reconnectTimerRef.current = window.setTimeout(connect, 1200);
         }
@@ -395,9 +411,25 @@ function useDashbMetrics() {
 
     connect();
 
+    // The server can disappear (sleep, crash, unplugged network) without the
+    // WebSocket ever firing a close/error event - the OS-level TCP timeout
+    // that would eventually surface that can take minutes. Watch how long
+    // it's been since the last message and force a reconnect (which blanks
+    // the display via the close handler above) once data goes stale.
+    const staleCheckId = window.setInterval(() => {
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      if (Date.now() - lastMessageAtRef.current > STALE_TIMEOUT_MS) {
+        socket.close();
+      }
+    }, STALE_CHECK_INTERVAL_MS);
+
     return () => {
       cancelled = true;
       clearReconnect();
+      window.clearInterval(staleCheckId);
       wsRef.current?.close();
       wsRef.current = null;
     };
