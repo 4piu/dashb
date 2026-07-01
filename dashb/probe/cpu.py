@@ -98,7 +98,9 @@ def collect_metric(metric: str) -> Any:
     if metric == "cpu.physical_cores":
         return psutil.cpu_count(logical=False) or 0
     if metric == "cpu.temperature_package":
-        return _read_lhm_value(metric)
+        if WINDOWS:
+            return _read_lhm_value(metric)
+        return _read_psutil_package_temperature()
     if metric == "cpu.voltage_average":
         return _average(_read_lhm_array("cpu.voltage_percore"))
     if metric == "cpu.voltage_percore":
@@ -137,13 +139,39 @@ def _clock_supported_non_windows() -> bool:
     return False
 
 
+def _read_psutil_package_temperature() -> float | None:
+    # psutil.sensors_temperatures() reads Linux hwmon sysfs directly (k10temp,
+    # coretemp, ...); it isn't implemented on Windows/macOS and raises there
+    # (or is absent from the platform's psutil build), which the checks below
+    # turn into "unsupported" rather than an error.
+    sensors_temperatures = getattr(psutil, "sensors_temperatures", None)
+    if sensors_temperatures is None:
+        return None
+    try:
+        sensor_groups = sensors_temperatures()
+    except (NotImplementedError, OSError):
+        return None
+
+    for entries in sensor_groups.values():
+        for entry in entries:
+            if entry.current is None:
+                continue
+            label = (entry.label or "").lower()
+            if any(part in label for part in ("package", "tdie", "tctl")):
+                return float(entry.current)
+    return None
+
+
 def _metric_supported(metric: str) -> bool:
     if metric in {"cpu.utilization", "cpu.logical_cores", "cpu.physical_cores"}:
         return True
     if metric == "cpu.utilization_percore":
         return _supports_per_core_utilization()
+    if metric == "cpu.temperature_package":
+        if WINDOWS:
+            return _supports_lhm_metric(metric)
+        return _read_psutil_package_temperature() is not None
     if metric in {
-        "cpu.temperature_package",
         "cpu.voltage_average",
         "cpu.voltage_percore",
         "cpu.power_package",
