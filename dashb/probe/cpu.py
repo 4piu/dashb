@@ -1,5 +1,4 @@
 import os
-import platform
 import time
 from typing import Any
 
@@ -9,7 +8,6 @@ from dashb.probe import lhm
 from dashb.probe.types import MetricMap
 
 WINDOWS = os.name == "nt"
-PERCPU_PLATFORMS = {"Linux", "FreeBSD"}
 
 METRICS = {
     "cpu.utilization": {"unit": "%", "kind": "gauge", "subscribable": True},
@@ -121,7 +119,9 @@ def collect_metric(metric: str) -> Any:
 
 
 def _supports_per_core_utilization() -> bool:
-    return platform.system() in PERCPU_PLATFORMS
+    # psutil.cpu_percent(percpu=True) is portable across every platform psutil
+    # supports (Windows included); there is no OS-specific restriction here.
+    return True
 
 
 def _supports_lhm_metric(metric: str) -> bool:
