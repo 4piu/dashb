@@ -208,6 +208,16 @@ class WebSocketSession:
         self.client_id = str(uuid.uuid4())
         self.send_lock = asyncio.Lock()
         self.subscriptions: set[str] = set()
+        # `quart.websocket` is a context-local proxy (werkzeug LocalProxy).
+        # ProbeTask._run() is a single shared asyncio.Task per metric that
+        # only gets created for the *first* subscriber, so its captured
+        # context belongs to whichever client's request triggered that
+        # creation. If a later client's send_json() ran there and used the
+        # ambient `websocket` proxy, it would resolve to that first client's
+        # connection instead of its own. Capture the concrete object now,
+        # while still in this session's own request context, so sends always
+        # target the right socket regardless of which task calls send_json().
+        self._ws = websocket._get_current_object()
 
     async def run(self):
         active_client_ids.add(self.client_id)
@@ -227,7 +237,7 @@ class WebSocketSession:
 
     async def send_json(self, message: Dict[str, Any]):
         async with self.send_lock:
-            await websocket.send(json.dumps(to_json_safe(message), allow_nan=False))
+            await self._ws.send(json.dumps(to_json_safe(message), allow_nan=False))
 
     async def send_error(
         self, code: str, message: str, req_id: Optional[str] = None
