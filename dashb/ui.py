@@ -23,6 +23,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QIcon, QIntValidator
 from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+
+SINGLE_INSTANCE_KEY = "dashb-gui-singleton"
 
 # Set up logging
 logging.config.dictConfig(
@@ -375,9 +378,48 @@ class SettingsWindow(QMainWindow):
         self.run_on_startup.setChecked(run_on_startup)
 
 
+def _notify_running_instance() -> bool:
+    """Ping the single-instance server; True if another instance is running."""
+    socket = QLocalSocket()
+    socket.connectToServer(SINGLE_INSTANCE_KEY)
+    connected = socket.waitForConnected(500)
+    if connected:
+        socket.disconnectFromServer()
+    return connected
+
+
+def _start_single_instance_server(window: "MainWindow") -> QLocalServer:
+    """Listen for later launches and raise the window instead of starting a second instance."""
+    # Removes a stale socket file left behind by a crash (no-op on Windows,
+    # which uses named pipes rather than a socket file).
+    QLocalServer.removeServer(SINGLE_INSTANCE_KEY)
+    server = QLocalServer()
+    server.listen(SINGLE_INSTANCE_KEY)
+
+    def _on_new_connection():
+        connection = server.nextPendingConnection()
+        if connection is not None:
+            connection.disconnectFromServer()
+            connection.deleteLater()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    server.newConnection.connect(_on_new_connection)
+    return server
+
+
 def launch_application(args):
     app = QApplication()
+
+    if _notify_running_instance():
+        logger.warning("Dashb is already running; showing the existing window instead.")
+        sys.exit(0)
+
     window = MainWindow()
+    # Keep the server alive for the app's lifetime by anchoring it to the window.
+    window._single_instance_server = _start_single_instance_server(window)
+
     window.show()
     app.exec()
     sys.exit()
