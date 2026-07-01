@@ -88,10 +88,10 @@ type SegmentValueOptions = {
 
 const LIVE_METRICS = [
   'cpu.utilization',
-  'cpu.per_core.utilization',
-  'cpu.max_core_clock_mhz',
-  'cpu.package_power_w',
-  'cpu.package_temperature_c',
+  'cpu.utilization_percore',
+  'cpu.clock_average',
+  'cpu.power_package',
+  'cpu.temperature_package',
   'gpu.utilization',
   'gpu.core_clock_mhz',
   'gpu.power_draw_w',
@@ -115,10 +115,10 @@ const STATIC_METRICS = [
 
 const SAMPLING_MS: Record<string, number> = {
   'cpu.utilization': 500,
-  'cpu.per_core.utilization': 500,
-  'cpu.max_core_clock_mhz': 500,
-  'cpu.package_power_w': 500,
-  'cpu.package_temperature_c': 500,
+  'cpu.utilization_percore': 500,
+  'cpu.clock_average': 500,
+  'cpu.power_package': 500,
+  'cpu.temperature_package': 500,
   'gpu.utilization': 1000,
   'gpu.core_clock_mhz': 1000,
   'gpu.power_draw_w': 1000,
