@@ -281,7 +281,14 @@ class ElevatedLhmClient:
             f"-ArgumentList {quoted_args}"
         )
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_command],
+            [
+                "powershell",
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps_command,
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=_NO_WINDOW_FLAGS,

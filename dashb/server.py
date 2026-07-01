@@ -481,6 +481,11 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Shutting down server...")
     finally:
+        # Stop probe sampling tasks before the generic task-cancel sweep below,
+        # since this also clears ProbeRegistry's bookkeeping (subscribers,
+        # tasks dict) rather than just cancelling the asyncio.Task objects.
+        probe_registry.shutdown()
+
         # Clean up tasks
         tasks = asyncio.all_tasks(loop=loop)
         for task in tasks:
