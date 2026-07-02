@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. v0.1.0). Defaults to the version in pyproject.toml."
+        description: "Release version (e.g. 0.1.0 WITHOUT v prefix). Defaults to the version in pyproject.toml."
         required: false
         default: ""
 
