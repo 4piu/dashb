@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="512"
+   height="512"
+   version="1.1"
+   viewBox="0 0 512 512"
+   id="svg3"
+   sodipodi:docname="icon-light.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs3" />
+  <sodipodi:namedview
+     id="namedview3"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="3.5390625"
+     inkscape:cx="256"
+     inkscape:cy="256"
+     inkscape:window-width="3840"
+     inkscape:window-height="2054"
+     inkscape:window-x="-11"
+     inkscape:window-y="291"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg3" />
+  <g
+     fill="#e8eaed"
+     id="g3"
+     style="fill:#1b1f23;fill-opacity:1">
+    <g
+       transform="matrix(.58883 0 0 .58883 -26.639 538.64)"
+       id="g1"
+       style="fill:#1b1f23;fill-opacity:1">
+      <path
+         d="m135.38-240q-23.05 0-39.22-16.16-16.16-16.17-16.16-39.22v-369.24q0-23.05 16.16-39.22 16.17-16.16 39.22-16.16h689.24q23.05 0 39.22 16.16 16.16 16.17 16.16 39.22v369.24q0 23.05-16.16 39.22-16.17 16.16-39.22 16.16zm61.54-30.77h566.16v-418.46h-566.16z"
+         id="path1"
+         style="fill:#1b1f23;fill-opacity:1" />
+    </g>
+    <g
+       transform="matrix(.31693 0 0 .31693 103.87 408.13)"
+       id="g2"
+       style="fill:#1b1f23;fill-opacity:1">
+      <path
+         d="m430.31-352.31q18.07 18.08 47.23 16.58 29.15-1.5 43.08-20.58l208.69-291.46-293 207.15q-19.85 13.39-22.35 41.43t16.35 46.88zm-232.16 152.31q-9.53 0-17.46-5.42-7.92-5.43-12.84-13.73-23.7-41.08-35.77-86.93-12.08-45.84-12.08-93.69 0-74.54 28.42-140.23 28.43-65.69 77.04-114.42 48.62-48.73 114.19-77.16 65.58-28.42 139.12-28.42 74.54 0 140.73 28.04t115.31 76.77q49.11 48.73 77.54 114.04 28.42 65.3 27.65 139.84 0 48.62-11.85 95.73-11.84 47.12-35 89.5-5.15 8.31-13.84 12.2-8.69 3.88-17.46 3.88z"
+         id="path2"
+         style="fill:#1b1f23;fill-opacity:1" />
+    </g>
+  </g>
+</svg>

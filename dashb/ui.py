@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
 )
-from PySide6.QtGui import QIcon, QIntValidator, QDesktopServices
-from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer, QUrl
+from PySide6.QtGui import QIcon, QIntValidator, QDesktopServices, QGuiApplication
+from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer, QUrl, Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from dashb.theme import default_user_theme_root
@@ -34,6 +34,19 @@ from dashb.theme_install import (
     theme_exists,
     theme_id_in_zip,
 )
+
+ICON_DIR = Path(__file__).resolve().parent / "assets"
+
+
+def _theme_icon_path() -> Path:
+    """Pick the icon variant that stays legible against the current OS tray/title
+    bar background: a light (near-white) glyph for a dark system theme, a dark
+    glyph for a light one.
+    """
+    scheme = QGuiApplication.styleHints().colorScheme()
+    name = "icon-dark.svg" if scheme == Qt.ColorScheme.Dark else "icon-light.svg"
+    return ICON_DIR / name
+
 
 SINGLE_INSTANCE_KEY = "dashb-gui-singleton"
 
@@ -75,13 +88,17 @@ class MainWindow(QMainWindow):
 
         # set window title and icon
         self.setWindowTitle("Dashb")
-        self.setWindowIcon(QIcon("icon.svg"))
+        self.setWindowIcon(QIcon(str(_theme_icon_path())))
 
         # Create a tray icon
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(QIcon("icon.svg"))
+        self.tray_icon.setIcon(QIcon(str(_theme_icon_path())))
         self.tray_icon.setToolTip("Dashb")
         self.tray_icon.show()
+
+        # Keep the tray icon legible if the user switches OS theme while the
+        # app is running (e.g. Windows' scheduled light/dark switch).
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._update_tray_icon)
 
         # tray menu
         self.tray_menu = QMenu()
@@ -272,6 +289,12 @@ class MainWindow(QMainWindow):
             self.btn_server_toggle.setEnabled(False)
             self.stop_server()
 
+    def _update_tray_icon(self):
+        """Re-pick the tray icon variant after a live OS theme change."""
+        icon = QIcon(str(_theme_icon_path()))
+        self.tray_icon.setIcon(icon)
+        self.setWindowIcon(icon)
+
     # close to tray
     def closeEvent(self, event):
         event.ignore()
@@ -335,7 +358,7 @@ class SettingsWindow(QMainWindow):
 
         # Set window title and icon
         self.setWindowTitle("Settings")
-        self.setWindowIcon(QIcon("icon.svg"))
+        self.setWindowIcon(QIcon(str(_theme_icon_path())))
 
         # Initialize QSettings
         self.settings = QSettings("MyApp", "Dashb")
