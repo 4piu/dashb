@@ -1,11 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react-swc'
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-declare const __dirname: string
-declare function require(moduleName: string): any
-
-const { copyFileSync, existsSync, mkdirSync, readdirSync } = require('node:fs')
-const { dirname, resolve } = require('node:path')
+const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 function copyThemeManifests() {
   return {

@@ -1,9 +1,8 @@
 import { defineConfig } from 'vite'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-declare const __dirname: string
-declare function require(moduleName: string): any
-
-const { resolve } = require('node:path')
+const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 // Builds the theme SDK a second time as a plain IIFE global
 // (`window.DashbRuntime`), so a theme that's just static HTML/JS with no
