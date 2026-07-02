@@ -82,6 +82,11 @@ type FormattedValue = {
 type SegmentValueOptions = {
   align?: CanvasTextAlign;
   maxRight?: number;
+  // Pins the digit block's right edge directly, bypassing the maxRight/unit-
+  // reservation math below. Used to align digits across values whose units
+  // differ in width (e.g. "MHz" vs "degC"), where matching maxRight alone
+  // would still leave the digits themselves misaligned.
+  digitsRight?: number;
   unitLayout?: 'inline' | 'bank' | 'percent';
   unitSize?: number;
 };
@@ -153,6 +158,9 @@ const COLORS = {
   cyan: '#47e9ff',
 };
 const GAUGE_BANDS = [COLORS.green, COLORS.yellow, COLORS.orange, COLORS.red];
+// Shipped alongside DSEG7 so every glyph on screen comes from a bundled font
+// instead of falling back to whatever sans-serif happens to be installed.
+const UI_FONT_FAMILY = '"Kode Mono", monospace';
 
 function numberValue(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -445,7 +453,7 @@ function rgba(hex: string, alpha: number): string {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
-function font(size: number, family = 'Inter, system-ui, sans-serif', weight = 700): string {
+function font(size: number, family = UI_FONT_FAMILY, weight = 700): string {
   return `${weight} ${Math.max(1, size)}px ${family}`;
 }
 
@@ -477,17 +485,20 @@ function drawPanelLabel(
 ) {
   ctx.font = font(size);
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  const padX = size * 0.34;
-  const padY = size * 0.22;
-  const width = ctx.measureText(label).width + padX * 2;
-  const height = size + padY * 2;
+  // A single pad on all sides plus a middle baseline keeps the text centered
+  // with equal margin left/right/top/bottom, instead of the old top-aligned
+  // text with mismatched horizontal/vertical padding.
+  const pad = size * 0.3;
+  const width = ctx.measureText(label).width + pad * 2;
+  const height = size + pad * 2;
   ctx.strokeStyle = COLORS.line;
   ctx.lineWidth = Math.max(1, size * 0.05);
   roundRect(ctx, x, y, width, height, Math.max(1, size * 0.08));
   ctx.stroke();
   ctx.fillStyle = COLORS.white;
-  ctx.fillText(label, x + padX, y + padY);
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + pad, y + height / 2);
+  return { width, height };
 }
 
 function drawSegmentText(
@@ -520,7 +531,7 @@ function drawSegmentValue(
   y: number,
   size: number,
   options: SegmentValueOptions = {},
-) {
+): { digitRight: number } {
   const align = options.align ?? 'right';
   const unitLayout = options.unitLayout ?? (value.unitBank ? 'bank' : 'inline');
   const unitSize =
@@ -531,12 +542,13 @@ function drawSegmentValue(
 
   ctx.font = segmentFont(size);
   const textWidth = ctx.measureText(mask).width;
-  ctx.font = font(unitSize, 'Inter, system-ui, sans-serif', 800);
+  ctx.font = font(unitSize, UI_FONT_FAMILY, 800);
   const unitWidth = units.length === 0 ? 0 : Math.max(...units.map((unit) => ctx.measureText(unit).width));
   const unitRight = options.maxRight ?? Number.POSITIVE_INFINITY;
   const reservedUnitWidth = unitWidth > 0 ? unitGap + unitWidth : 0;
   const digitRightLimit = Number.isFinite(unitRight) ? unitRight - reservedUnitWidth : Number.POSITIVE_INFINITY;
-  const digitRight = Math.min(align === 'right' ? x : x + textWidth, digitRightLimit);
+  const digitRight =
+    options.digitsRight ?? Math.min(align === 'right' ? x : x + textWidth, digitRightLimit);
   const digitX = align === 'right' ? digitRight : digitRight - textWidth;
   const unitX = digitRight + unitGap;
   const bottom = y + size * 0.42;
@@ -547,6 +559,49 @@ function drawSegmentValue(
   } else if (value.unit) {
     drawUnitText(ctx, value.unit, unitX, bottom, unitSize);
   }
+  return { digitRight };
+}
+
+// Measures how wide a segment value (digits + reserved unit space) would
+// render at a given size, without drawing anything - used to shrink text
+// that would otherwise overflow its available width on narrower/squarer
+// layouts.
+function measureSegmentValueWidth(
+  ctx: CanvasRenderingContext2D,
+  value: FormattedValue,
+  mask: string,
+  size: number,
+  options: SegmentValueOptions = {},
+): number {
+  const unitLayout = options.unitLayout ?? (value.unitBank ? 'bank' : 'inline');
+  const unitSize =
+    options.unitSize ??
+    (unitLayout === 'bank' ? size * 0.3 : unitLayout === 'percent' ? size * 0.42 : size * 0.42);
+  const unitGap = unitLayout === 'percent' ? size * 0.12 : size * 0.24;
+  const units = value.unitBank ?? (value.unit ? [value.unit] : []);
+
+  ctx.font = segmentFont(size);
+  const textWidth = ctx.measureText(mask).width;
+  ctx.font = font(unitSize, UI_FONT_FAMILY, 800);
+  const unitWidth = units.length === 0 ? 0 : Math.max(...units.map((unit) => ctx.measureText(unit).width));
+  const reservedUnitWidth = unitWidth > 0 ? unitGap + unitWidth : 0;
+  return textWidth + reservedUnitWidth;
+}
+
+function fitSegmentValueSize(
+  ctx: CanvasRenderingContext2D,
+  value: FormattedValue,
+  mask: string,
+  size: number,
+  maxWidth: number,
+  options: SegmentValueOptions = {},
+  minSize = 9,
+): number {
+  const width = measureSegmentValueWidth(ctx, value, mask, size, options);
+  if (width <= 0 || width <= maxWidth) {
+    return size;
+  }
+  return Math.max(minSize, size * (maxWidth / width));
 }
 
 function drawUnitText(
@@ -556,7 +611,7 @@ function drawUnitText(
   y: number,
   size: number,
 ) {
-  ctx.font = font(size, 'Inter, system-ui, sans-serif', 800);
+  ctx.font = font(size, UI_FONT_FAMILY, 800);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'bottom';
   ctx.fillStyle = COLORS.white;
@@ -571,7 +626,7 @@ function drawUnitBank(
   y: number,
   size: number,
 ) {
-  ctx.font = font(size, 'Inter, system-ui, sans-serif', 800);
+  ctx.font = font(size, UI_FONT_FAMILY, 800);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'bottom';
   const lineHeight = size * 1.08;
@@ -610,7 +665,7 @@ function drawCenteredPercent(
   ctx.textAlign = 'center';
   ctx.fillText(lowerDigits, cx, digitBottom);
   ctx.shadowBlur = 0;
-  drawUnitText(ctx, '%', cx + digitWidth * 1.26, digitBottom, size * 0.52);
+  drawUnitText(ctx, '%', cx + digitWidth * 1.1, digitBottom + size * 0.1, size * 0.52);
 }
 
 function drawGauge(
@@ -645,8 +700,8 @@ function drawGauge(
     ctx.restore();
   }
 
-  drawCenteredPercent(ctx, value, cx, cy, radius * 0.52);
-  drawText(ctx, label, cx, rect.y + rect.h - radius * 0.05, Math.max(9, radius * 0.13), 'center');
+  drawCenteredPercent(ctx, value, cx, cy, radius * 0.6);
+  drawText(ctx, label, cx, rect.y + rect.h - radius * 0.05, Math.max(12, radius * 0.19), 'center');
 }
 
 function roundRect(
@@ -662,7 +717,7 @@ function roundRect(
 }
 
 function panelLayout(width: number, height: number) {
-  const pad = Math.max(4, Math.min(width, height) * 0.008);
+  const pad = Math.max(2, Math.min(width, height) * 0.005);
   const line = 1;
   const grid: Rect = {
     x: pad,
@@ -700,12 +755,14 @@ function drawPanelHeader(
   headline?: FormattedValue,
   headlineMask?: string,
   headlineSize?: number,
-) {
-  const labelSize = Math.max(10, Math.min(rect.w, rect.h) * 0.07);
+  outerRect?: Rect,
+): { digitRight?: number } {
+  const labelSize = Math.max(11, Math.min(rect.w, rect.h) * 0.055);
   const valueSize = headlineSize ?? labelSize * 0.95;
-  drawPanelLabel(ctx, label, rect.x, rect.y, labelSize);
+  const labelOrigin = outerRect ?? rect;
+  drawPanelLabel(ctx, label, labelOrigin.x, labelOrigin.y, labelSize);
   if (headline) {
-    drawSegmentValue(
+    const { digitRight } = drawSegmentValue(
       ctx,
       headline,
       headlineMask ?? headline.digits.replace(/[0-9-]/g, '8'),
@@ -714,44 +771,76 @@ function drawPanelHeader(
       valueSize,
       { align: 'right', maxRight: rect.x + rect.w, unitSize: valueSize * 0.46 },
     );
+    return { digitRight };
   }
+  return {};
+}
+
+function drawClockPowerTempRow(
+  ctx: CanvasRenderingContext2D,
+  r: Rect,
+  rect: Rect,
+  label: string,
+  clock: FormattedValue,
+  power: FormattedValue,
+  temp: FormattedValue,
+) {
+  // Text is normally sized off panel height; on a square-ish panel (low
+  // aspect ratio) that can produce power/temperature values wider than the
+  // half-width each gets, so they collide in the middle. Shrink to whatever
+  // actually fits, measured against the segment font at the candidate size.
+  let small = Math.max(13, rect.h * 0.11);
+  const halfWidth = r.w * 0.46;
+  small = Math.min(
+    small,
+    fitSegmentValueSize(ctx, power, '888', small, halfWidth, { unitSize: small * 0.48 }),
+    fitSegmentValueSize(ctx, temp, '888', small, halfWidth, { unitSize: small * 0.48 }),
+  );
+  const header = drawPanelHeader(ctx, r, label, clock, '8888', small, rect);
+  const y = r.y + rect.h * 0.22;
+  drawSegmentValue(ctx, power, '888', r.x, y, small, {
+    align: 'left',
+    maxRight: r.x + r.w * 0.48,
+    unitSize: small * 0.48,
+  });
+  // Align the temperature digits' right edge with the clock header's digits
+  // (not just its overall maxRight) - "MHz" and "degC" reserve different unit
+  // widths, so matching maxRight alone still leaves the digits misaligned.
+  drawSegmentValue(ctx, temp, '888', r.x + r.w, y, small, {
+    align: 'right',
+    digitsRight: header.digitRight,
+    unitSize: small * 0.48,
+  });
+  return small;
 }
 
 function drawCpuPanel(ctx: CanvasRenderingContext2D, rect: Rect, values: Record<string, MetricValue>) {
-  const r = inset(rect, Math.max(6, rect.w * 0.035));
-  const small = Math.max(12, rect.h * 0.095);
-  drawPanelHeader(ctx, r, 'CPU', integerValue(numberValue(values['cpu.max_core_clock_mhz']?.value), 'MHz'), '8888', small);
-  const y = r.y + rect.h * 0.18;
-  drawSegmentValue(ctx, integerValue(numberValue(values['cpu.package_power_w']?.value), 'W'), '888', r.x, y, small, {
-    align: 'left',
-    maxRight: r.x + r.w * 0.48,
-    unitSize: small * 0.48,
-  });
-  drawSegmentValue(ctx, integerValue(numberValue(values['cpu.package_temperature_c']?.value), '°C'), '888', r.x + r.w - small * 1.4, y, small, {
-    align: 'right',
-    maxRight: r.x + r.w,
-    unitSize: small * 0.48,
-  });
-  drawGauge(ctx, { x: r.x, y: r.y + rect.h * 0.18, w: r.w, h: rect.h * 0.74 }, clampPercent(numberValue(values['cpu.utilization']?.value)), 'UTIL');
+  const r = inset(rect, Math.max(4, rect.w * 0.02));
+  drawClockPowerTempRow(
+    ctx,
+    r,
+    rect,
+    'CPU',
+    integerValue(numberValue(values['cpu.clock_average']?.value), 'MHz'),
+    integerValue(numberValue(values['cpu.power_package']?.value), 'W'),
+    integerValue(numberValue(values['cpu.temperature_package']?.value), '°C'),
+  );
+  drawGauge(ctx, { x: r.x, y: r.y + rect.h * 0.24, w: r.w, h: rect.h * 0.68 }, clampPercent(numberValue(values['cpu.utilization']?.value)), 'UTIL');
 }
 
 function drawGpuPanel(ctx: CanvasRenderingContext2D, rect: Rect, values: Record<string, MetricValue>) {
-  const r = inset(rect, Math.max(6, rect.w * 0.035));
-  const small = Math.max(12, rect.h * 0.095);
-  drawPanelHeader(ctx, r, 'GPU', integerValue(numberValue(values['gpu.core_clock_mhz']?.value), 'MHz'), '8888', small);
-  const y = r.y + rect.h * 0.18;
-  drawSegmentValue(ctx, integerValue(numberValue(values['gpu.power_draw_w']?.value), 'W'), '888', r.x, y, small, {
-    align: 'left',
-    maxRight: r.x + r.w * 0.48,
-    unitSize: small * 0.48,
-  });
-  drawSegmentValue(ctx, integerValue(numberValue(values['gpu.temperature_c']?.value), '°C'), '888', r.x + r.w - small * 1.4, y, small, {
-    align: 'right',
-    maxRight: r.x + r.w,
-    unitSize: small * 0.48,
-  });
-  const gaugeY = r.y + rect.h * 0.25;
-  const gaugeH = rect.h * 0.62;
+  const r = inset(rect, Math.max(4, rect.w * 0.02));
+  drawClockPowerTempRow(
+    ctx,
+    r,
+    rect,
+    'GPU',
+    integerValue(numberValue(values['gpu.core_clock_mhz']?.value), 'MHz'),
+    integerValue(numberValue(values['gpu.power_draw_w']?.value), 'W'),
+    integerValue(numberValue(values['gpu.temperature_c']?.value), '°C'),
+  );
+  const gaugeY = r.y + rect.h * 0.31;
+  const gaugeH = rect.h * 0.56;
   const gap = r.w * 0.04;
   drawGauge(ctx, { x: r.x, y: gaugeY, w: (r.w - gap) / 2, h: gaugeH }, clampPercent(numberValue(values['gpu.utilization']?.value)), 'UTIL');
   const used = numberValue(values['gpu.memory_used_bytes']?.value);
@@ -761,8 +850,8 @@ function drawGpuPanel(ctx: CanvasRenderingContext2D, rect: Rect, values: Record<
 }
 
 function drawMemoryPanel(ctx: CanvasRenderingContext2D, rect: Rect, values: Record<string, MetricValue>) {
-  const r = inset(rect, Math.max(6, rect.w * 0.035));
-  drawPanelHeader(ctx, r, 'RAM');
+  const r = inset(rect, Math.max(4, rect.w * 0.02));
+  drawPanelHeader(ctx, r, 'RAM', undefined, undefined, undefined, rect);
   const top = { x: r.x, y: r.y + rect.h * 0.1, w: r.w, h: rect.h * 0.42 };
   const bottom = { x: r.x, y: r.y + rect.h * 0.53, w: r.w, h: rect.h * 0.42 };
   drawMemorySection(ctx, top, 'PHYS', numberValue(values['memory.physical.used']?.value), numberValue(values['memory.physical.total']?.value), clampPercent(numberValue(values['memory.physical.percent']?.value)));
@@ -778,30 +867,49 @@ function drawMemorySection(
   percent: number | null,
 ) {
   const gaugeRect = { x: rect.x, y: rect.y, w: rect.w * 0.42, h: rect.h };
+  const textLeft = rect.x + rect.w * 0.45;
   const valueX = rect.x + rect.w;
   const resolvedPercent = percent ?? (used !== null && total ? clampPercent((used / total) * 100) : null);
   drawGauge(ctx, gaugeRect, resolvedPercent, label);
-  const size = Math.max(10, rect.h * 0.18);
-  drawText(ctx, 'USED', rect.x + rect.w * 0.55, rect.y + rect.h * 0.2, size * 0.62);
-  drawSegmentValue(ctx, bytesValue(used), '8888.8', valueX, rect.y + rect.h * 0.38, size, {
+  // Cap the value size to what actually fits between the gauge and the right
+  // edge - on a square-ish panel the height-based size can be wide enough to
+  // overlap the gauge.
+  const usedValue = bytesValue(used);
+  const totalValue = bytesValue(total);
+  const availableWidth = (valueX - textLeft) * 0.96;
+  let size = Math.max(13, rect.h * 0.28);
+  size = Math.min(
+    size,
+    fitSegmentValueSize(ctx, usedValue, '8888.8', size, availableWidth, { unitLayout: 'bank', unitSize: size * 0.4 }),
+    fitSegmentValueSize(ctx, totalValue, '8888.8', size, availableWidth, { unitLayout: 'bank', unitSize: size * 0.4 }),
+  );
+  drawText(ctx, 'USED', textLeft, rect.y + rect.h * 0.08, size * 0.52);
+  drawSegmentValue(ctx, usedValue, '8888.8', valueX, rect.y + rect.h * 0.32, size, {
     align: 'right',
     maxRight: valueX,
     unitLayout: 'bank',
+    unitSize: size * 0.4,
   });
-  drawText(ctx, 'TOTAL', rect.x + rect.w * 0.55, rect.y + rect.h * 0.62, size * 0.62);
-  drawSegmentValue(ctx, bytesValue(total), '8888.8', valueX, rect.y + rect.h * 0.8, size, {
+  drawText(ctx, 'TOTAL', textLeft, rect.y + rect.h * 0.58, size * 0.52);
+  drawSegmentValue(ctx, totalValue, '8888.8', valueX, rect.y + rect.h * 0.82, size, {
     align: 'right',
     maxRight: valueX,
     unitLayout: 'bank',
+    unitSize: size * 0.4,
   });
 }
 
 function drawIoPanel(ctx: CanvasRenderingContext2D, rect: Rect, values: Record<string, MetricValue>) {
-  const r = inset(rect, Math.max(6, rect.w * 0.035));
+  const r = inset(rect, Math.max(4, rect.w * 0.02));
   const sectionH = r.h / 2;
   const midY = r.y + sectionH;
+  // Match the labelSize formula drawPanelHeader uses for the CPU/GPU/RAM panels
+  // so DISK/NET labels are the same size as every other panel label.
+  const labelSize = Math.max(11, Math.min(r.w, r.h) * 0.055);
   ctx.fillStyle = COLORS.line;
-  ctx.fillRect(r.x, midY, r.w, 1);
+  // Span the full outer width (not just the inset content width) so this
+  // divider reaches the NET label's left edge below.
+  ctx.fillRect(rect.x, midY, rect.w, 1);
   drawIoSection(
     ctx,
     'DISK',
@@ -813,6 +921,8 @@ function drawIoPanel(ctx: CanvasRenderingContext2D, rect: Rect, values: Record<s
     r.y,
     r.w,
     sectionH,
+    labelSize,
+    { x: rect.x, y: rect.y },
   );
   drawIoSection(
     ctx,
@@ -825,6 +935,8 @@ function drawIoPanel(ctx: CanvasRenderingContext2D, rect: Rect, values: Record<s
     midY,
     r.w,
     sectionH,
+    labelSize,
+    { x: rect.x, y: midY },
   );
 }
 
@@ -836,10 +948,24 @@ function drawIoSection(
   y: number,
   width: number,
   height: number,
+  labelSize: number,
+  labelOrigin: { x: number; y: number },
 ) {
-  const topPadding = Math.max(4, height * 0.035);
-  drawPanelLabel(ctx, label, x, y + topPadding, Math.max(10, height * 0.14));
-  const size = Math.max(10, height * 0.22);
+  drawPanelLabel(ctx, label, labelOrigin.x, labelOrigin.y, labelSize);
+  let size = Math.max(11, height * 0.26);
+  // Reserve space for the row label ("W"/"R"/"TX"/"RX") before fitting the
+  // value - on a square-ish panel the height-based size can otherwise be wide
+  // enough that the right-aligned value runs into the label on the left.
+  const labelGap = size * 0.5;
+  size = Math.min(
+    size,
+    ...rows.map(([rowLabel, value]) => {
+      ctx.font = font(size * 0.75);
+      const labelWidth = ctx.measureText(rowLabel).width;
+      const available = (width - labelWidth - labelGap) * 0.96;
+      return fitSegmentValueSize(ctx, value, '8888.8', size, available, { unitLayout: 'bank' });
+    }),
+  );
   drawIoLine(ctx, rows[0][0], rows[0][1], x, y + height * 0.45, width, size);
   drawIoLine(ctx, rows[1][0], rows[1][1], x, y + height * 0.78, width, size);
 }
@@ -867,14 +993,14 @@ function drawCorePanel(
   values: Record<string, MetricValue>,
   coreHistory: number[][],
 ) {
-  const r = inset(rect, Math.max(6, rect.h * 0.04));
-  const currentCores = arrayValue(values['cpu.per_core.utilization']?.value);
+  const r = inset(rect, Math.max(4, rect.h * 0.025));
+  const currentCores = arrayValue(values['cpu.utilization_percore']?.value);
   const count = Math.max(currentCores.length, coreHistory.length, 16);
   const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
   const rows = Math.max(1, Math.ceil(count / columns));
-  const gridTop = r.y + rect.h * 0.04;
-  const colGap = Math.max(3, Math.min(8, rect.h * 0.016));
-  const rowGap = Math.max(2, Math.min(5, rect.h * 0.01));
+  const gridTop = r.y + rect.h * 0.02;
+  const colGap = Math.max(2, Math.min(6, rect.h * 0.014));
+  const rowGap = Math.max(1, Math.min(4, rect.h * 0.008));
   const cellW = (r.w - colGap * (columns - 1)) / columns;
   const cellH = (r.y + r.h - gridTop - rowGap * (rows - 1)) / rows;
   for (let index = 0; index < count; index += 1) {
@@ -897,22 +1023,22 @@ function drawCoreCell(
   value: number | null,
   history: number[],
 ) {
-  const labelSize = Math.max(7, Math.min(rect.h * 0.3, rect.w * 0.075));
-  const valueSize = Math.max(8, Math.min(rect.h * 0.3, rect.w * 0.085));
-  const chartY = rect.y + rect.h * 0.16;
-  const chartH = rect.h * 0.68;
+  const labelSize = Math.max(8, Math.min(rect.h * 0.34, rect.w * 0.09));
+  const valueSize = Math.max(9, Math.min(rect.h * 0.34, rect.w * 0.1));
+  const chartY = rect.y + rect.h * 0.1;
+  const chartH = rect.h * 0.78;
   ctx.font = font(labelSize);
   const labelW = ctx.measureText(`C${index}`).width;
   const valueW = valueSize * 2.75;
   const stackW = Math.max(labelW, valueW);
   const stackGap = Math.max(3, rect.w * 0.025);
   ctx.font = font(labelSize);
-  ctx.textAlign = 'left';
+  ctx.textAlign = 'right';
   ctx.textBaseline = 'top';
   ctx.fillStyle = COLORS.white;
-  ctx.fillText(`C${index}`, rect.x, chartY);
-  drawSegmentValue(ctx, { digits: value === null ? '--' : String(Math.round(value)), unit: '%' }, '188', rect.x, chartY + chartH - valueSize * 0.42, valueSize, {
-    align: 'left',
+  ctx.fillText(`C${index}`, rect.x + stackW, chartY);
+  drawSegmentValue(ctx, { digits: value === null ? '--' : String(Math.round(value)), unit: '%' }, '188', rect.x + stackW, chartY + chartH - valueSize * 0.42, valueSize, {
+    align: 'right',
     maxRight: rect.x + stackW,
     unitLayout: 'percent',
     unitSize: valueSize * 0.52,
