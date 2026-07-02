@@ -3,9 +3,10 @@
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 
 THEME_ID_PATTERN = re.compile(r"^[a-z0-9_-]+$")
@@ -45,11 +46,28 @@ def default_webroot() -> Path:
     return Path(__file__).resolve().parent.parent / "web-app" / "dist"
 
 
-def default_theme_root(webroot: Optional[Path] = None) -> Path:
-    env_path = os.getenv("DASHB_THEME_PATH")
+def default_builtin_theme_root(webroot: Optional[Path] = None) -> Path:
+    """Themes shipped inside the app bundle. Replaced whenever the app is rebuilt/updated."""
+    return (webroot or default_webroot()) / "theme"
+
+
+def default_user_theme_root() -> Path:
+    """Writable directory for user-installed themes, separate from the app bundle so a rebuild
+    or app update never touches them.
+    """
+    env_path = os.getenv("DASHB_USER_THEME_PATH")
     if env_path:
         return Path(env_path).expanduser()
-    return (webroot or default_webroot()) / "theme"
+
+    if os.name == "nt":
+        base = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "dashb" / "themes"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "dashb" / "themes"
+
+    xdg_data_home = os.getenv("XDG_DATA_HOME")
+    base_dir = Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
+    return base_dir / "dashb" / "themes"
 
 
 def is_valid_theme_id(theme_id: str) -> bool:
@@ -67,8 +85,7 @@ def _read_manifest(theme_dir: Path) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def discover_themes(theme_root: Optional[Path] = None) -> List[Theme]:
-    root = theme_root or default_theme_root()
+def _discover_themes_in_root(root: Path) -> List[Theme]:
     if not root.exists():
         return []
 
@@ -103,10 +120,23 @@ def discover_themes(theme_root: Optional[Path] = None) -> List[Theme]:
     return themes
 
 
-def find_theme(theme_id: str, theme_root: Optional[Path] = None) -> Optional[Theme]:
+def discover_themes(theme_roots: Sequence[Path]) -> List[Theme]:
+    """Scan theme_roots in order and merge by id, later roots overriding earlier ones.
+
+    This lets a user-installed theme override a built-in theme of the same id when
+    theme_roots is [builtin_root, user_root].
+    """
+    by_id: Dict[str, Theme] = {}
+    for root in theme_roots:
+        for theme in _discover_themes_in_root(root):
+            by_id[theme.id] = theme
+    return sorted(by_id.values(), key=lambda theme: theme.id)
+
+
+def find_theme(theme_id: str, theme_roots: Sequence[Path]) -> Optional[Theme]:
     if not is_valid_theme_id(theme_id):
         return None
-    for theme in discover_themes(theme_root):
+    for theme in discover_themes(theme_roots):
         if theme.id == theme_id:
             return theme
     return None

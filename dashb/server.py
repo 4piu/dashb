@@ -14,11 +14,13 @@ from typing import Any, Dict, Optional, Set
 from quart import Quart, jsonify, request, send_file, websocket
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
+from dashb import __version__
 from dashb.probe import build_metric_catalog, lhm
 from dashb.scheduler import ProbeRegistry
 from dashb.theme import (
     default_webroot,
-    default_theme_root,
+    default_builtin_theme_root,
+    default_user_theme_root,
     discover_themes,
     find_theme,
     resolve_theme_asset,
@@ -33,7 +35,11 @@ from dashb.server_constants import (
 )
 
 WEBROOT = default_webroot()
-THEME_ROOT = default_theme_root(WEBROOT)
+BUILTIN_THEME_ROOT = default_builtin_theme_root(WEBROOT)
+USER_THEME_ROOT = default_user_theme_root()
+# User themes are scanned second so a user-installed theme overrides a
+# built-in theme of the same id.
+THEME_ROOTS = [BUILTIN_THEME_ROOT, USER_THEME_ROOT]
 
 logging.config.dictConfig(
     {
@@ -151,12 +157,17 @@ async def theme_picker():
 
 @app.route("/api/themes")
 async def api_themes():
-    return jsonify([theme.to_api_dict() for theme in discover_themes(THEME_ROOT)])
+    return jsonify(
+        {
+            "serverVersion": __version__,
+            "themes": [theme.to_api_dict() for theme in discover_themes(THEME_ROOTS)],
+        }
+    )
 
 
 @app.route("/theme/<theme_id>/")
 async def theme_index(theme_id: str):
-    theme = find_theme(theme_id, THEME_ROOT)
+    theme = find_theme(theme_id, THEME_ROOTS)
     if not theme:
         return "Theme not found", 404
     entry = resolve_theme_asset(theme, theme.entry)
@@ -167,7 +178,7 @@ async def theme_index(theme_id: str):
 
 @app.route("/theme/<theme_id>/<path:asset_path>")
 async def theme_asset(theme_id: str, asset_path: str):
-    theme = find_theme(theme_id, THEME_ROOT)
+    theme = find_theme(theme_id, THEME_ROOTS)
     if not theme:
         return "Theme not found", 404
     asset = resolve_theme_asset(theme, asset_path)
@@ -296,7 +307,7 @@ class WebSocketSession:
                 "id": req_id,
                 "ts_ms": now_ts_ms(),
                 "proto": PROTOCOL_VERSION,
-                "server": {"name": "dashb", "version": "0.1.0"},
+                "server": {"name": "dashb", "version": __version__},
                 "capabilities": {
                     "auth": "basic" if username and password else "none",
                     "tls": False,
@@ -473,7 +484,8 @@ if __name__ == "__main__":
     password = os.getenv("PASSWORD", None)
 
     logger.info(f"Web root: {WEBROOT}")
-    logger.info(f"Theme root: {THEME_ROOT}")
+    logger.info(f"Built-in theme root: {BUILTIN_THEME_ROOT}")
+    logger.info(f"User theme root: {USER_THEME_ROOT}")
     logger.info(f"Starting server...")
 
     config = Config()

@@ -20,10 +20,20 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QSystemTrayIcon,
     QMenu,
+    QFileDialog,
+    QMessageBox,
 )
-from PySide6.QtGui import QIcon, QIntValidator
-from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer
+from PySide6.QtGui import QIcon, QIntValidator, QDesktopServices
+from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer, QUrl
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
+
+from dashb.theme import default_user_theme_root
+from dashb.theme_install import (
+    ThemeInstallError,
+    install_theme_from_zip,
+    theme_exists,
+    theme_id_in_zip,
+)
 
 SINGLE_INSTANCE_KEY = "dashb-gui-singleton"
 
@@ -97,6 +107,14 @@ class MainWindow(QMainWindow):
         self.button_clear_log = QPushButton("Clear Log", self)
         self.button_clear_log.clicked.connect(self.text_log.clear)
 
+        # Create a button for opening the user themes folder
+        self.button_open_themes_folder = QPushButton("Open Themes Folder", self)
+        self.button_open_themes_folder.clicked.connect(self.on_open_themes_folder)
+
+        # Create a button for installing a theme from a zip file
+        self.button_install_theme = QPushButton("Install Theme...", self)
+        self.button_install_theme.clicked.connect(self.on_install_theme)
+
         # Create a button for opening settings
         self.button_settings = QPushButton("Settings", self)
         self.button_settings.clicked.connect(lambda: self.settings_window.show())
@@ -111,6 +129,8 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.btn_server_toggle)
         button_layout.addWidget(self.button_clear_log)
         button_layout.addStretch()  # Spacer to push button to the right
+        button_layout.addWidget(self.button_open_themes_folder)
+        button_layout.addWidget(self.button_install_theme)
         button_layout.addWidget(self.button_settings)
         button_layout.addWidget(self.button_quit)
 
@@ -262,6 +282,51 @@ class MainWindow(QMainWindow):
         """Logs message to the text area."""
         logging.info(message)
         self.text_log.append(message)
+
+    def on_open_themes_folder(self):
+        """Open the writable user themes folder in the OS file browser, creating it first
+        if this is the user's first time installing a theme.
+        """
+        theme_root = default_user_theme_root()
+        theme_root.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(theme_root)))
+
+    def on_install_theme(self):
+        """Prompt for a theme zip, validate it, and install it into the user themes folder."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Install Theme", "", "Theme archive (*.zip)"
+        )
+        if not file_path:
+            return
+
+        theme_root = default_user_theme_root()
+        try:
+            theme_id = theme_id_in_zip(Path(file_path))
+        except ThemeInstallError as ex:
+            QMessageBox.critical(self, "Install Theme Failed", str(ex))
+            return
+
+        if theme_exists(theme_id, theme_root):
+            answer = QMessageBox.question(
+                self,
+                "Theme Already Installed",
+                f'A theme named "{theme_id}" is already installed. Overwrite it?',
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        try:
+            theme = install_theme_from_zip(Path(file_path), theme_root)
+        except ThemeInstallError as ex:
+            QMessageBox.critical(self, "Install Theme Failed", str(ex))
+            return
+
+        QMessageBox.information(
+            self,
+            "Theme Installed",
+            f'Installed "{theme.name}" ({theme.id}). It will show up next time the theme '
+            "picker page is loaded.",
+        )
 
 
 class SettingsWindow(QMainWindow):

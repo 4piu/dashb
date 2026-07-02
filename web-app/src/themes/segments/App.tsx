@@ -1,70 +1,11 @@
 import { type PointerEvent, useEffect, useRef, useState } from 'react';
-
-type MetricMeta = {
-  metric: string;
-  unit?: string;
-  kind?: string;
-  subscribable?: boolean;
-};
+import { connectDashb, type ConnectionState, type SampleEntry } from '../../theme-sdk';
 
 type MetricValue = {
   value: unknown;
   unit?: string;
   ts_ms: number;
 };
-
-type ServerInfoMessage = {
-  type: 'server_info';
-  metrics?: MetricMeta[];
-};
-
-type SampleMessage = {
-  type: 'sample';
-  ts_ms: number;
-  values?: Array<{
-    metric: string;
-    value: unknown;
-    unit?: string;
-  }>;
-};
-
-type QueryResultMessage = {
-  type: 'query_result';
-  ts_ms: number;
-  values?: Array<{
-    metric: string;
-    value: unknown;
-    unit?: string;
-  }>;
-};
-
-type SubscribedMessage = {
-  type: 'subscribed';
-  accepted?: Array<{
-    metric: string;
-    interval_ms: number;
-  }>;
-  rejected?: Array<{
-    metric: string;
-    reason: string;
-  }>;
-};
-
-type ErrorMessage = {
-  type: 'error';
-  code?: string;
-  message?: string;
-};
-
-type MetricMessage =
-  | ServerInfoMessage
-  | SampleMessage
-  | QueryResultMessage
-  | SubscribedMessage
-  | ErrorMessage
-  | { type: string };
-
-type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 type Rect = {
   x: number;
@@ -140,13 +81,6 @@ const SAMPLING_MS: Record<string, number> = {
 };
 
 const CORE_HISTORY_LIMIT = 36;
-// The server can go away without ever sending a close frame (sleep, abrupt
-// power-off, network drop) - the browser's TCP stack may not notice for a
-// long time. Track how long it's been since we last heard anything and
-// force a reconnect (blanking the display to dashes) once that exceeds a
-// few multiples of the fastest subscription interval.
-const STALE_TIMEOUT_MS = 3000;
-const STALE_CHECK_INTERVAL_MS = 500;
 const COLORS = {
   black: '#000000',
   white: '#f4f7f2',
@@ -234,9 +168,6 @@ function rateValue(value: number | null): FormattedValue {
 }
 
 function useDashbMetrics() {
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
-  const lastMessageAtRef = useRef(0);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [connectionDetail, setConnectionDetail] = useState('');
   const [supportedMetrics, setSupportedMetrics] = useState<Set<string>>(new Set());
@@ -244,12 +175,7 @@ function useDashbMetrics() {
   const [coreHistory, setCoreHistory] = useState<number[][]>([]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    const updateValues = (
-      entries: Array<{ metric: string; value: unknown; unit?: string }>,
-      ts_ms: number,
-    ) => {
+    const updateValues = (entries: SampleEntry[], ts_ms: number) => {
       setValues((current) => {
         const next = { ...current };
         for (const entry of entries) {
@@ -276,171 +202,50 @@ function useDashbMetrics() {
       }
     };
 
-    const clearReconnect = () => {
-      if (reconnectTimerRef.current !== null) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-    };
-
-    const resetLiveData = () => {
-      setValues({});
-      setCoreHistory([]);
-    };
-
-    const connect = () => {
-      clearReconnect();
-      setConnectionState('connecting');
-      setConnectionDetail('');
-      wsRef.current?.close();
-
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
-      wsRef.current = socket;
-
-      socket.addEventListener('open', () => {
-        lastMessageAtRef.current = Date.now();
-        setConnectionState('connected');
-        setConnectionDetail('online');
-        socket.send(
-          JSON.stringify({
-            type: 'hello',
-            id: 'segments-hello',
-            proto_min: 1,
-            proto_max: 1,
-            client: {
-              name: 'dashb-segments-theme',
-              version: '0.1.0',
-            },
-          }),
-        );
-      });
-
-      socket.addEventListener('message', (event) => {
-        if (wsRef.current !== socket) {
-          return;
+    const client = connectDashb({
+      clientName: 'dashb-segments-theme',
+      clientVersion: '0.1.0',
+      onConnectionChange: (state, detail) => {
+        setConnectionState(state);
+        setConnectionDetail(detail);
+        // 'stale' means the socket is still open but no data has arrived in
+        // a while (e.g. the server machine slept) - blank the display same
+        // as an outright disconnect, since what's on screen can no longer
+        // be trusted.
+        if (state === 'disconnected' || state === 'stale') {
+          setValues({});
+          setCoreHistory([]);
         }
-        lastMessageAtRef.current = Date.now();
+      },
+      onServerInfo: (message) => {
+        const metricSet = new Set((message.metrics ?? []).map(({ metric }) => metric));
+        setSupportedMetrics(metricSet);
 
-        let message: MetricMessage;
-        try {
-          message = JSON.parse(event.data) as MetricMessage;
-        } catch (error) {
-          setConnectionState('error');
-          setConnectionDetail(`bad json ${String(error)}`);
-          return;
+        const queryMetrics = STATIC_METRICS.filter((metric) => metricSet.has(metric));
+        if (queryMetrics.length > 0) {
+          client.query(queryMetrics, 'segments-query-static');
         }
 
-        if (message.type === 'server_info') {
-          const serverInfo = message as ServerInfoMessage;
-          const metricSet = new Set((serverInfo.metrics ?? []).map(({ metric }) => metric));
-          setSupportedMetrics(metricSet);
-
-          const queryMetrics = STATIC_METRICS.filter((metric) =>
-            metricSet.has(metric),
-          );
-          if (queryMetrics.length > 0) {
-            socket.send(
-              JSON.stringify({
-                type: 'query',
-                id: 'segments-query-static',
-                metrics: queryMetrics,
-              }),
-            );
-          }
-
-          const subscriptions = LIVE_METRICS.filter((metric) =>
-            metricSet.has(metric),
-          ).map((metric) => ({
+        const subscriptions = LIVE_METRICS.filter((metric) => metricSet.has(metric)).map(
+          (metric) => ({
             metric,
             interval_ms: SAMPLING_MS[metric] ?? 1000,
-          }));
-
-          if (subscriptions.length > 0) {
-            socket.send(
-              JSON.stringify({
-                type: 'subscribe',
-                id: 'segments-subscribe',
-                subscriptions,
-              }),
-            );
-          }
-          return;
+          }),
+        );
+        if (subscriptions.length > 0) {
+          client.subscribe(subscriptions, 'segments-subscribe');
         }
+      },
+      onQueryResult: (message) => updateValues(message.values ?? [], message.ts_ms),
+      onSample: (message) => updateValues(message.values ?? [], message.ts_ms),
+      onSubscribed: (message) => {
+        const accepted = message.accepted?.length ?? 0;
+        const rejected = message.rejected?.length ?? 0;
+        setConnectionDetail(`subscribed ${accepted}/${accepted + rejected}`);
+      },
+    });
 
-        if (message.type === 'query_result') {
-          const queryResult = message as QueryResultMessage;
-          updateValues(queryResult.values ?? [], queryResult.ts_ms);
-          return;
-        }
-
-        if (message.type === 'sample') {
-          const sample = message as SampleMessage;
-          updateValues(sample.values ?? [], sample.ts_ms);
-          return;
-        }
-
-        if (message.type === 'subscribed') {
-          const subscribed = message as SubscribedMessage;
-          const accepted = subscribed.accepted?.length ?? 0;
-          const rejected = subscribed.rejected?.length ?? 0;
-          setConnectionDetail(`subscribed ${accepted}/${accepted + rejected}`);
-          return;
-        }
-
-        if (message.type === 'error') {
-          const errorMessage = message as ErrorMessage;
-          setConnectionState('error');
-          setConnectionDetail(errorMessage.message ?? errorMessage.code ?? 'server error');
-        }
-      });
-
-      socket.addEventListener('close', (event) => {
-        if (wsRef.current !== socket) {
-          return;
-        }
-        wsRef.current = null;
-        setConnectionState('disconnected');
-        setConnectionDetail(`closed ${event.code}`);
-        resetLiveData();
-        if (!cancelled) {
-          reconnectTimerRef.current = window.setTimeout(connect, 1200);
-        }
-      });
-
-      socket.addEventListener('error', () => {
-        if (wsRef.current !== socket) {
-          return;
-        }
-        setConnectionState('error');
-        setConnectionDetail('websocket error');
-      });
-    };
-
-    connect();
-
-    // The server can disappear (sleep, crash, unplugged network) without the
-    // WebSocket ever firing a close/error event - the OS-level TCP timeout
-    // that would eventually surface that can take minutes. Watch how long
-    // it's been since the last message and force a reconnect (which blanks
-    // the display via the close handler above) once data goes stale.
-    const staleCheckId = window.setInterval(() => {
-      const socket = wsRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-      if (Date.now() - lastMessageAtRef.current > STALE_TIMEOUT_MS) {
-        socket.close();
-      }
-    }, STALE_CHECK_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      clearReconnect();
-      window.clearInterval(staleCheckId);
-      wsRef.current?.close();
-      wsRef.current = null;
-    };
+    return () => client.close();
   }, []);
 
   return { connectionState, connectionDetail, supportedMetrics, values, coreHistory };
