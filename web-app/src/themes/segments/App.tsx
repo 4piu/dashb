@@ -518,7 +518,26 @@ function roundRect(
   radius: number,
 ) {
   ctx.beginPath();
-  ctx.roundRect(x, y, width, height, radius);
+  // CanvasRenderingContext2D.roundRect() only shipped in Safari 16.4 (2023);
+  // older Safari (e.g. iOS 15) throws here, which aborts the whole draw call
+  // right after the black background fill - a silent black screen with no
+  // console visible to notice it. Draw the path by hand instead, since
+  // arcTo has been supported forever.
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(x, y, width, height, radius);
+    return;
+  }
+  const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.arcTo(x + width, y, x + width, y + r, r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.arcTo(x + width, y + height, x + width - r, y + height, r);
+  ctx.lineTo(x + r, y + height);
+  ctx.arcTo(x, y + height, x, y + height - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
 }
 
 function panelLayout(width: number, height: number) {
