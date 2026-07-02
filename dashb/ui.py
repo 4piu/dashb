@@ -141,15 +141,32 @@ class MainWindow(QMainWindow):
         self.button_quit = QPushButton("Quit", self)
         self.button_quit.clicked.connect(QApplication.quit)
 
-        # Create the layout for buttons
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.btn_server_toggle)
-        button_layout.addWidget(self.button_clear_log)
-        button_layout.addStretch()  # Spacer to push button to the right
-        button_layout.addWidget(self.button_open_themes_folder)
-        button_layout.addWidget(self.button_install_theme)
-        button_layout.addWidget(self.button_settings)
-        button_layout.addWidget(self.button_quit)
+        # Give every button some breathing room instead of a wall of edge-to-edge text.
+        central_widget = QWidget(self)
+        central_widget.setStyleSheet("QPushButton { padding: 6px 14px; }")
+
+        # Row 1: server lifecycle controls, with Settings pulled to the far side
+        # so it doesn't compete for attention with the primary Start/Stop action.
+        server_row = QHBoxLayout()
+        server_row.setSpacing(8)
+        server_row.addWidget(self.btn_server_toggle)
+        server_row.addWidget(self.button_clear_log)
+        server_row.addStretch()
+        server_row.addWidget(self.button_settings)
+
+        # Row 2: theme management, with Quit isolated on the far side so it isn't
+        # adjacent to the frequently-used theme buttons (avoids accidental clicks).
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(8)
+        theme_row.addWidget(self.button_open_themes_folder)
+        theme_row.addWidget(self.button_install_theme)
+        theme_row.addStretch()
+        theme_row.addWidget(self.button_quit)
+
+        button_layout = QVBoxLayout()
+        button_layout.setSpacing(8)
+        button_layout.addLayout(server_row)
+        button_layout.addLayout(theme_row)
 
         # Create a separator (horizontal line)
         separator = QFrame()
@@ -158,16 +175,18 @@ class MainWindow(QMainWindow):
 
         # Main layout
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
         main_layout.addLayout(button_layout)  # Add button layout to main layout
         main_layout.addWidget(separator)  # Add separator after the buttons
         main_layout.addWidget(self.text_log)  # Add the log area after the separator
 
-        # Create a central widget and set the layout to it
-        central_widget = QWidget(self)
+        # Set the layout to the central widget
         central_widget.setLayout(main_layout)
 
         # Set the central widget to the QMainWindow
         self.setCentralWidget(central_widget)
+        self.resize(560, 420)
 
         # Start the server
         self.btn_server_toggle.click()
