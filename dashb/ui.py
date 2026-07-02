@@ -27,6 +27,7 @@ from PySide6.QtGui import QIcon, QIntValidator, QDesktopServices, QGuiApplicatio
 from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer, QUrl, Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
+from dashb.paths import app_root
 from dashb.theme import default_user_theme_root
 from dashb.theme_install import (
     ThemeInstallError,
@@ -35,7 +36,7 @@ from dashb.theme_install import (
     theme_id_in_zip,
 )
 
-ICON_DIR = Path(__file__).resolve().parent / "assets"
+ICON_DIR = app_root() / "dashb" / "assets"
 
 
 def _theme_icon_path() -> Path:
@@ -226,10 +227,14 @@ class MainWindow(QMainWindow):
         env.insert("PASSWORD", password)
         self.server_process.setProcessEnvironment(env)
 
-        # ensure imports resolve by running as module from project root
-        project_root = Path(__file__).resolve().parent.parent
-        self.server_process.setWorkingDirectory(str(project_root))
-        self.server_process.setArguments(["-m", "dashb.server"])
+        self.server_process.setWorkingDirectory(str(app_root()))
+        if getattr(sys, "frozen", False):
+            # A packaged build has no `-m` to fall back on; the frozen exe
+            # relaunches itself and dispatches on this flag (see dashb/entry.py).
+            self.server_process.setArguments(["--server"])
+        else:
+            # Run as a module from source so imports resolve the same way.
+            self.server_process.setArguments(["-m", "dashb", "--server"])
 
         # Redirect standard output and error to log_message
         self.server_process.readyReadStandardOutput.connect(

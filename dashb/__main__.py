@@ -1,6 +1,6 @@
 import sys
 
-from dashb.ui import launch_application
+from dashb.entry import main
 
 if __name__ == "__main__":
-    launch_application(sys.argv[1:])
+    main(sys.argv[1:])

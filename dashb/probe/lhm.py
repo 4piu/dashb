@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from dashb.paths import app_root
+
 HELPER_ENV = "DASHB_LHM_HELPER_PATH"
 LIST_CACHE_TTL_S = 30
 READ_CACHE_TTL_S = 0.25
@@ -484,8 +486,11 @@ def _find_helper_commands() -> list[list[str]]:
         if path.is_file():
             return _commands_for_helper_path(path)
 
-    root = Path(__file__).resolve().parents[2]
+    root = app_root()
     candidates = [
+        # Packaged (PyInstaller) build: the self-contained publish output is
+        # bundled flat under lhm-helper/.
+        root / "lhm-helper" / "dashb-lhm-helper.exe",
         root / "dashb-lhm-helper.exe",
         root / "helpers" / "lhm-helper" / "dashb-lhm-helper.exe",
         root
@@ -525,8 +530,11 @@ def _find_elevated_helper_path() -> Optional[Path]:
         if path.is_file() and path.suffix.lower() == ".exe":
             return path
 
-    root = Path(__file__).resolve().parents[2]
+    root = app_root()
     candidates = [
+        # Packaged (PyInstaller) build: the self-contained publish output is
+        # bundled flat under lhm-helper/.
+        root / "lhm-helper" / "dashb-lhm-helper.exe",
         root / "dashb-lhm-helper.exe",
         root / "helpers" / "lhm-helper" / "dashb-lhm-helper.exe",
         root

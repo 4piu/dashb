@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from dashb.paths import app_root
 
 THEME_ID_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 
@@ -43,7 +44,7 @@ def default_webroot() -> Path:
     env_path = os.getenv("DASHB_WEBROOT_PATH")
     if env_path:
         return Path(env_path).expanduser()
-    return Path(__file__).resolve().parent.parent / "web-app" / "dist"
+    return app_root() / "web-app" / "dist"
 
 
 def default_builtin_theme_root(webroot: Optional[Path] = None) -> Path:

@@ -475,7 +475,9 @@ async def ws_handle():
     await session.run()
 
 
-if __name__ == "__main__":
+def run_server() -> None:
+    global username, password
+
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8080))
 
@@ -523,3 +525,7 @@ if __name__ == "__main__":
         if hasattr(loop, "_proactor"):
             loop._proactor.close()
         loop.close()
+
+
+if __name__ == "__main__":
+    run_server()
