@@ -79,8 +79,10 @@ function App() {
   return (
     <main className="theme-selector">
       <section className="theme-card" aria-labelledby="theme-selector-title">
-        <p className="eyebrow">dashb</p>
-        <h1 id="theme-selector-title">Theme Selector</h1>
+        <header className="theme-header">
+          <span className="brand">dashb</span>
+          <h1 id="theme-selector-title">Theme Selector</h1>
+        </header>
         <p className="status">{status}</p>
 
         <div className="theme-list">
