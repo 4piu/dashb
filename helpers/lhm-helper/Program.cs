@@ -103,20 +103,30 @@ void RunServer(int port, string token)
         using var writer = new StreamWriter(stream) { AutoFlush = true };
 
         var shuttingDown = false;
-        while (reader.ReadLine() is { } line)
+        try
         {
-            if (string.IsNullOrWhiteSpace(line))
+            while (reader.ReadLine() is { } line)
             {
-                continue;
-            }
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
 
-            var response = HandleRequestLine(line, token);
-            writer.WriteLine(JsonSerializer.Serialize(response, jsonOptions));
-            if (response is ShutdownResponse)
-            {
-                shuttingDown = true;
-                break;
+                var response = HandleRequestLine(line, token);
+                writer.WriteLine(JsonSerializer.Serialize(response, jsonOptions));
+                if (response is ShutdownResponse)
+                {
+                    shuttingDown = true;
+                    break;
+                }
             }
+        }
+        catch (IOException)
+        {
+            // Client connection dropped mid-read (killed process, network
+            // hiccup, sleep/resume). Not fatal for the helper - just move on
+            // and wait for the next connection instead of crashing the
+            // process and forcing a fresh UAC prompt on reconnect.
         }
 
         if (shuttingDown)
