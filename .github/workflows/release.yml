@@ -1,0 +1,77 @@
+name: Build and release (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.1.0). Defaults to the version in pyproject.toml."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -m1 '^version' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Build web app
+        working-directory: web-app
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Publish LHM helper
+        run: >
+          dotnet publish helpers/lhm-helper/Dashb.LhmHelper.csproj
+          -c Release -r win-x64 --self-contained true
+
+      - name: Build executable
+        run: uv run pyinstaller dashb.spec --noconfirm
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "dist/Dashb.exe" "out/Dashb-v${{ steps.version.outputs.version }}-win64.exe"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dashb-v${{ steps.version.outputs.version }}-win64
+          path: out/Dashb-v${{ steps.version.outputs.version }}-win64.exe
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Dashb v${{ steps.version.outputs.version }}
+          files: out/Dashb-v${{ steps.version.outputs.version }}-win64.exe
+          generate_release_notes: true
