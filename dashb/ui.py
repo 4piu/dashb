@@ -28,6 +28,7 @@ from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer, QUr
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from dashb.paths import app_root
+from dashb import startup
 from dashb.theme import default_user_theme_root
 from dashb.theme_install import (
     ThemeInstallError,
@@ -415,6 +416,11 @@ class SettingsWindow(QMainWindow):
 
         # Create a check box for run on startup
         self.run_on_startup = QCheckBox("Run on startup", self)
+        if not startup.is_supported():
+            self.run_on_startup.setEnabled(False)
+            self.run_on_startup.setToolTip(
+                "Run on startup is currently supported only on Windows."
+            )
 
         # Create a button for canceling settings
         self.button_cancel = QPushButton("Cancel", self)
@@ -463,12 +469,24 @@ class SettingsWindow(QMainWindow):
 
     def save_settings(self):
         """Save settings to persistent storage."""
+        try:
+            startup.set_enabled(self.run_on_startup.isChecked())
+        except (OSError, startup.StartupRegistrationError) as ex:
+            QMessageBox.critical(
+                self,
+                "Startup Setting Failed",
+                f"Dashb could not update the Windows startup setting:\n\n{ex}",
+            )
+            return
+
         self.settings.setValue("host", self.host_input.text())
         self.settings.setValue("port", self.port_input.text())
         self.settings.setValue("basic_auth", self.basic_auth.isChecked())
         self.settings.setValue("username", self.username_input.text())
         self.settings.setValue("password", self.password_input.text())
-        self.settings.setValue("run_on_startup", self.run_on_startup.isChecked())
+        # Older builds saved this flag but never registered a startup command.
+        # The Windows Run key is now the source of truth.
+        self.settings.remove("run_on_startup")
         self.close()
 
     def load_settings(self):
@@ -478,7 +496,20 @@ class SettingsWindow(QMainWindow):
         basic_auth = self.settings.value("basic_auth", False, type=bool)
         username = self.settings.value("username", "", type=str)
         password = self.settings.value("password", "", type=str)
-        run_on_startup = self.settings.value("run_on_startup", False, type=bool)
+        legacy_run_on_startup = self.settings.value(
+            "run_on_startup", False, type=bool
+        )
+
+        run_on_startup = startup.is_enabled()
+        if startup.is_supported() and (run_on_startup or legacy_run_on_startup):
+            try:
+                # This both migrates the old no-op setting and refreshes an
+                # existing registration if the portable exe has been moved.
+                startup.set_enabled(True)
+                run_on_startup = True
+                self.settings.remove("run_on_startup")
+            except OSError as ex:
+                logger.warning("Could not refresh Dashb startup registration: %s", ex)
 
         self.host_input.setText(host)
         self.port_input.setText(port)
@@ -500,13 +531,34 @@ def _notify_running_instance() -> bool:
     return connected
 
 
-def _start_single_instance_server(window: "MainWindow") -> QLocalServer:
-    """Listen for later launches and raise the window instead of starting a second instance."""
-    # Removes a stale socket file left behind by a crash (no-op on Windows,
-    # which uses named pipes rather than a socket file).
+def _claim_single_instance() -> QLocalServer | None:
+    """Claim the app-wide lock before starting any server/helper processes."""
+    server = QLocalServer()
+    if server.listen(SINGLE_INSTANCE_KEY):
+        return server
+
+    if _notify_running_instance():
+        return None
+
+    # The name was occupied but could not be contacted, so it is safe to clean
+    # up a stale Unix socket. This is a no-op for Windows named pipes.
     QLocalServer.removeServer(SINGLE_INSTANCE_KEY)
     server = QLocalServer()
-    server.listen(SINGLE_INSTANCE_KEY)
+    if server.listen(SINGLE_INSTANCE_KEY):
+        return server
+
+    # Close the remaining race where another launch claimed it after cleanup.
+    if _notify_running_instance():
+        return None
+    raise RuntimeError(
+        server.errorString() or "could not claim the single-instance lock"
+    )
+
+
+def _activate_window_for_later_launches(
+    server: QLocalServer, window: "MainWindow"
+) -> None:
+    """Raise the existing window when a second Dashb launch pings it."""
 
     def _on_new_connection():
         connection = server.nextPendingConnection()
@@ -518,20 +570,31 @@ def _start_single_instance_server(window: "MainWindow") -> QLocalServer:
         window.activateWindow()
 
     server.newConnection.connect(_on_new_connection)
-    return server
+    # A second launch can connect in the short interval between claiming the
+    # name and constructing MainWindow. Drain that already-queued activation.
+    if server.hasPendingConnections():
+        _on_new_connection()
 
 
 def launch_application(args):
     app = QApplication()
 
-    if _notify_running_instance():
+    try:
+        single_instance_server = _claim_single_instance()
+    except RuntimeError as ex:
+        QMessageBox.critical(None, "Dashb Could Not Start", str(ex))
+        sys.exit(1)
+
+    if single_instance_server is None:
         logger.warning("Dashb is already running; showing the existing window instead.")
         sys.exit(0)
 
     window = MainWindow()
-    # Keep the server alive for the app's lifetime by anchoring it to the window.
-    window._single_instance_server = _start_single_instance_server(window)
+    _activate_window_for_later_launches(single_instance_server, window)
+    # Keep the listener alive for the app's lifetime by anchoring it to the window.
+    window._single_instance_server = single_instance_server
 
-    window.show()
+    if startup.STARTUP_ARGUMENT not in args:
+        window.show()
     app.exec()
     sys.exit()

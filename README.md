@@ -37,6 +37,11 @@ It's a single portable executable — no installer, nothing else to unpack.
 Host, port, and Basic Auth can be changed from **Settings** in the GUI window
 (reopen the window by clicking the tray icon).
 
+Enabling **Run on startup** registers the current executable for the current
+Windows user and starts Dashb in the system tray after sign-in. If the optional
+sensor-helper UAC prompt is declined or times out, Dashb will not prompt again in
+the background; restart the server when you want to retry elevation.
+
 ## Uninstalling
 
 Dashb is portable and doesn't register itself as an installed program, so there's
@@ -49,6 +54,8 @@ nothing to remove from "Apps & features." To fully clean up:
    - Saved settings (host/port/auth), stored in the registry rather than a file:
      `HKEY_CURRENT_USER\Software\MyApp\Dashb` (remove via `regedit`, or
      `reg delete "HKCU\Software\MyApp\Dashb" /f` in a terminal).
+   - If **Run on startup** was enabled, its `Dashb` value under
+     `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
 
 ## Other platforms
 
