@@ -173,13 +173,14 @@ class ElevatedLhmClient:
         self.token = secrets.token_urlsafe(32)
         self.port = _free_loopback_port()
         self.last_error: Optional[str] = None
-        # Whether we've ever successfully launched an elevated helper in this
-        # client's lifetime. Once true, a broken connection tries a plain
-        # reconnect to the same port/token first (the helper loops to accept
-        # new connections and only exits on an explicit shutdown or when this
-        # process dies) before falling back to relaunching - which is the
-        # only path that triggers a fresh UAC prompt.
+        # UAC is never invoked more than once in this client's lifetime. If the
+        # user declines, ignores the prompt, or the helper later dies, sensor
+        # access remains disabled until Dashb's server is deliberately restarted.
+        # This prevents recurring probe requests from spawning an unbounded number
+        # of elevation prompts while the machine is unattended.
+        self._elevation_attempted = False
         self._helper_launched = False
+        self._disabled_reason: Optional[str] = None
 
     @property
     def helper_commands(self) -> list[list[str]]:
@@ -263,6 +264,11 @@ class ElevatedLhmClient:
                     pass
             self._close_connection()
             self._helper_launched = False
+            # A late probe request racing with shutdown must not be able to
+            # launch a fresh elevated process. The module discards this client
+            # after close; a deliberate server restart creates a new one.
+            self._elevation_attempted = True
+            self._disabled_reason = "LibreHardwareMonitor helper client is closed"
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
@@ -299,6 +305,9 @@ class ElevatedLhmClient:
         if self.socket is not None:
             return
 
+        if self._disabled_reason is not None:
+            raise RuntimeError(self._disabled_reason)
+
         if self._helper_launched and self._connect(RECONNECT_TIMEOUT_S):
             # Reused the still-running elevated helper from before (e.g. the
             # loopback connection merely dropped across a sleep/resume) - no
@@ -306,19 +315,43 @@ class ElevatedLhmClient:
             return
 
         if self._helper_launched:
-            # The quick reconnect above failed, so the previous elevated
-            # process is genuinely gone, not just holding a stale socket.
-            # Rotate the port/token before relaunching so we never race a
-            # not-yet-torn-down previous helper still bound to the old port.
-            self.token = secrets.token_urlsafe(32)
-            self.port = _free_loopback_port()
+            self._disable(
+                "LibreHardwareMonitor elevated helper stopped; restart the Dashb "
+                "server to request elevation again"
+            )
 
-        self._start_elevated_server()
-        self._helper_launched = True
+        if self._elevation_attempted:
+            self._disable(
+                self.last_error
+                or "LibreHardwareMonitor elevation was not accepted; restart the "
+                "Dashb server to try again"
+            )
+
+        # Set this before spawning PowerShell. Even a launch exception must not
+        # allow a later background probe to produce another UAC prompt.
+        self._elevation_attempted = True
+        try:
+            self._start_elevated_server()
+        except OSError as ex:
+            self.last_error = str(ex)
+            self._disable(
+                "Could not start the LibreHardwareMonitor elevated helper; restart "
+                "the Dashb server to try again"
+            )
         if self._connect(CONNECT_TIMEOUT_S):
+            self._helper_launched = True
             return
 
-        raise RuntimeError(self.last_error or "timed out waiting for elevated helper")
+        self._disable(
+            "LibreHardwareMonitor elevation was not accepted or the helper did not "
+            "start; restart the Dashb server to try again"
+        )
+
+    def _disable(self, reason: str) -> None:
+        self._disabled_reason = reason
+        self.last_error = reason
+        self._close_connection()
+        raise RuntimeError(reason)
 
     def _connect(self, timeout_s: float) -> bool:
         deadline = time.monotonic() + timeout_s
