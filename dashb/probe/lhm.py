@@ -509,6 +509,23 @@ def _parse_sensors(items: list[dict[str, Any]]) -> list[Sensor]:
     return sensors
 
 
+def _helper_candidates() -> list[Path]:
+    """Where the LHM helper exe may live, in priority order."""
+    root = app_root()
+    publish = root / "helpers" / "lhm-helper" / "bin" / "Release" / "net8.0"
+    publish = publish / "win-x64" / "publish"
+    return [
+        # Packaged (PyInstaller) build: the self-contained publish output is
+        # bundled flat under lhm-helper/.
+        root / "lhm-helper" / "dashb-lhm-helper.exe",
+        root / "dashb-lhm-helper.exe",
+        root / "helpers" / "lhm-helper" / "dashb-lhm-helper.exe",
+        # Running from source after `dotnet publish`.
+        publish / "dashb-lhm-helper.exe",
+        publish / "Dashb.LhmHelper.exe",
+    ]
+
+
 def _find_helper_commands() -> list[list[str]]:
     if os.name != "nt":
         return []
@@ -519,35 +536,8 @@ def _find_helper_commands() -> list[list[str]]:
         if path.is_file():
             return _commands_for_helper_path(path)
 
-    root = app_root()
-    candidates = [
-        # Packaged (PyInstaller) build: the self-contained publish output is
-        # bundled flat under lhm-helper/.
-        root / "lhm-helper" / "dashb-lhm-helper.exe",
-        root / "dashb-lhm-helper.exe",
-        root / "helpers" / "lhm-helper" / "dashb-lhm-helper.exe",
-        root
-        / "helpers"
-        / "lhm-helper"
-        / "bin"
-        / "Release"
-        / "net8.0"
-        / "win-x64"
-        / "publish"
-        / "dashb-lhm-helper.exe",
-        root
-        / "helpers"
-        / "lhm-helper"
-        / "bin"
-        / "Release"
-        / "net8.0"
-        / "win-x64"
-        / "publish"
-        / "Dashb.LhmHelper.exe",
-    ]
-
     commands: list[list[str]] = []
-    for path in candidates:
+    for path in _helper_candidates():
         if path.is_file():
             commands.extend(_commands_for_helper_path(path))
     return _dedupe_commands(commands)
@@ -563,33 +553,7 @@ def _find_elevated_helper_path() -> Optional[Path]:
         if path.is_file() and path.suffix.lower() == ".exe":
             return path
 
-    root = app_root()
-    candidates = [
-        # Packaged (PyInstaller) build: the self-contained publish output is
-        # bundled flat under lhm-helper/.
-        root / "lhm-helper" / "dashb-lhm-helper.exe",
-        root / "dashb-lhm-helper.exe",
-        root / "helpers" / "lhm-helper" / "dashb-lhm-helper.exe",
-        root
-        / "helpers"
-        / "lhm-helper"
-        / "bin"
-        / "Release"
-        / "net8.0"
-        / "win-x64"
-        / "publish"
-        / "dashb-lhm-helper.exe",
-        root
-        / "helpers"
-        / "lhm-helper"
-        / "bin"
-        / "Release"
-        / "net8.0"
-        / "win-x64"
-        / "publish"
-        / "Dashb.LhmHelper.exe",
-    ]
-    for path in candidates:
+    for path in _helper_candidates():
         if path.is_file():
             return path
     return None

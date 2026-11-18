@@ -15,7 +15,7 @@ from quart import Quart, jsonify, request, send_file, websocket
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
 from dashb import __version__
-from dashb.probe import build_metric_catalog, lhm
+from dashb.probe import build_metric_catalog, lhm, shutdown_probe_executor
 from dashb.scheduler import ProbeRegistry
 from dashb.theme import (
     default_webroot,
@@ -520,6 +520,7 @@ def run_server() -> None:
         # since this also clears ProbeRegistry's bookkeeping (subscribers,
         # tasks dict) rather than just cancelling the asyncio.Task objects.
         probe_registry.shutdown()
+        shutdown_probe_executor()
 
         # Clean up tasks
         tasks = asyncio.all_tasks(loop=loop)

@@ -4,12 +4,15 @@ Keeps one sampler per metric and fan-outs to subscribed clients.
 """
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from dashb.probe import MetricCatalog
 from dashb.server_constants import MIN_INTERVAL_MS, MAX_INTERVAL_MS
+
+logger = logging.getLogger(__name__)
 
 SendFn = Callable[[Dict[str, Any]], Awaitable[None]]
 
@@ -35,7 +38,15 @@ class ProbeTask:
     async def _run(self):
         while not self.stopped and self.subscribers:
             started = time.time()
-            value = await self.catalog.collect(self.metric)
+            try:
+                value = await self.catalog.collect(self.metric)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Previously an exception here silently ended this task, leaving
+                # every subscriber of the metric with a stream that never updates.
+                logger.exception(f"Collecting {self.metric} failed")
+                value = None
             ts_ms = int(time.time() * 1000)
             payload = {
                 "type": "sample",
