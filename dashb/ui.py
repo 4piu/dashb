@@ -26,7 +26,7 @@ from PySide6.QtCore import QSettings, QProcess, QProcessEnvironment, QTimer, QUr
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from dashb.paths import app_root
-from dashb import startup
+from dashb import auth, startup
 from dashb.theme import default_user_theme_root
 from dashb.theme_install import (
     ThemeInstallError,
@@ -49,6 +49,11 @@ def _theme_icon_path() -> Path:
 
 
 SINGLE_INSTANCE_KEY = "dashb-gui-singleton"
+SETTINGS_ORG = "4piu"
+SETTINGS_APP = "Dashb"
+# Builds before the org rename stored settings (including a plaintext Basic Auth
+# password) under HKCU\Software\MyApp\Dashb.
+LEGACY_SETTINGS_ORG = "MyApp"
 # The server logs every websocket message at DEBUG; cap the in-window log so a
 # tray app left running for weeks doesn't grow without bound.
 MAX_LOG_LINES = 5000
@@ -212,8 +217,8 @@ class MainWindow(QMainWindow):
             if basic_auth
             else ""
         )
-        password = (
-            self.settings_window.settings.value("password", "", type=str)
+        password_hash = (
+            self.settings_window.settings.value("password_hash", "", type=str)
             if basic_auth
             else ""
         )
@@ -227,7 +232,7 @@ class MainWindow(QMainWindow):
         env.insert("DASHB_HOST", host)
         env.insert("DASHB_PORT", str(port))
         env.insert("DASHB_USERNAME", username)
-        env.insert("DASHB_PASSWORD", password)
+        env.insert("DASHB_PASSWORD_HASH", password_hash)
         self.server_process.setProcessEnvironment(env)
 
         self.server_process.setWorkingDirectory(str(app_root()))
@@ -395,7 +400,8 @@ class SettingsWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(_theme_icon_path())))
 
         # Initialize QSettings
-        self.settings = QSettings("MyApp", "Dashb")
+        _remove_legacy_settings()
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
         # Create a QLineEdit with label for server host
         self.host_label = QLabel("Host:", self)
@@ -468,16 +474,34 @@ class SettingsWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
-        # Load saved settings
-        self.load_settings()
+        self.refresh_startup_registration()
 
     def on_basic_auth_toggle(self, checked):
         """Toggle the username and password input fields."""
         self.username_input.setEnabled(checked)
         self.password_input.setEnabled(checked)
 
+    def showEvent(self, event):
+        # Always show what's actually stored, so edits abandoned via Cancel or
+        # the close button (e.g. a typed but unsaved password) don't linger.
+        self.load_settings()
+        super().showEvent(event)
+
     def save_settings(self):
         """Save settings to persistent storage."""
+        basic_auth = self.basic_auth.isChecked()
+        username = self.username_input.text().strip()
+        new_password = self.password_input.text()
+        has_stored_password = auth.is_valid_hash(
+            self.settings.value("password_hash", "", type=str)
+        )
+        if basic_auth and not username:
+            QMessageBox.warning(self, "Basic Auth", "Enter a username.")
+            return
+        if basic_auth and not new_password and not has_stored_password:
+            QMessageBox.warning(self, "Basic Auth", "Enter a password.")
+            return
+
         try:
             startup.set_enabled(self.run_on_startup.isChecked())
         except (OSError, startup.StartupRegistrationError) as ex:
@@ -490,44 +514,73 @@ class SettingsWindow(QMainWindow):
 
         self.settings.setValue("host", self.host_input.text())
         self.settings.setValue("port", self.port_input.text())
-        self.settings.setValue("basic_auth", self.basic_auth.isChecked())
-        self.settings.setValue("username", self.username_input.text())
-        self.settings.setValue("password", self.password_input.text())
-        # Older builds saved this flag but never registered a startup command.
-        # The Windows Run key is now the source of truth.
-        self.settings.remove("run_on_startup")
+        self.settings.setValue("basic_auth", basic_auth)
+        self.settings.setValue("username", username)
+        if new_password:
+            # Only a salted hash is stored; the password itself is never saved.
+            self.settings.setValue("password_hash", auth.hash_password(new_password))
         self.close()
 
     def load_settings(self):
-        """Load settings from persistent storage."""
-        host = self.settings.value("host", "0.0.0.0", type=str)
-        port = self.settings.value("port", "8080", type=str)
+        """Load settings from persistent storage into the form."""
         basic_auth = self.settings.value("basic_auth", False, type=bool)
-        username = self.settings.value("username", "", type=str)
-        password = self.settings.value("password", "", type=str)
-        legacy_run_on_startup = self.settings.value(
-            "run_on_startup", False, type=bool
+        has_stored_password = auth.is_valid_hash(
+            self.settings.value("password_hash", "", type=str)
         )
 
-        run_on_startup = startup.is_enabled()
-        if startup.is_supported() and (run_on_startup or legacy_run_on_startup):
-            try:
-                # This both migrates the old no-op setting and refreshes an
-                # existing registration if the portable exe has been moved.
-                startup.set_enabled(True)
-                run_on_startup = True
-                self.settings.remove("run_on_startup")
-            except OSError as ex:
-                logger.warning("Could not refresh Dashb startup registration: %s", ex)
-
-        self.host_input.setText(host)
-        self.port_input.setText(port)
+        self.host_input.setText(self.settings.value("host", "0.0.0.0", type=str))
+        self.port_input.setText(self.settings.value("port", "8080", type=str))
         self.basic_auth.setChecked(basic_auth)
-        self.username_input.setText(username)
-        self.password_input.setText(password)
+        self.username_input.setText(self.settings.value("username", "", type=str))
+        # The stored hash can't be shown; leave the field empty to keep it.
+        self.password_input.clear()
+        self.password_input.setPlaceholderText(
+            "(unchanged)" if has_stored_password else ""
+        )
         self.username_input.setEnabled(basic_auth)
         self.password_input.setEnabled(basic_auth)
-        self.run_on_startup.setChecked(run_on_startup)
+        self.run_on_startup.setChecked(startup.is_enabled())
+
+    def refresh_startup_registration(self):
+        """Re-point an existing startup registration at this exe, in case the
+        portable exe has been moved since it was registered."""
+        if not (startup.is_supported() and startup.is_enabled()):
+            return
+        try:
+            startup.set_enabled(True)
+        except OSError as ex:
+            logger.warning("Could not refresh Dashb startup registration: %s", ex)
+
+
+def _remove_legacy_settings() -> None:
+    """Delete settings left by builds that used the placeholder "MyApp" org,
+    which included a plaintext Basic Auth password."""
+    legacy = QSettings(LEGACY_SETTINGS_ORG, SETTINGS_APP)
+    if legacy.allKeys():
+        legacy.clear()
+        legacy.sync()
+    if os.name != "nt":
+        return
+
+    import winreg
+
+    try:
+        winreg.DeleteKey(
+            winreg.HKEY_CURRENT_USER,
+            rf"Software\{LEGACY_SETTINGS_ORG}\{SETTINGS_APP}",
+        )
+    except OSError:
+        pass
+    # Remove the parent too, but only if nothing else lives under "MyApp".
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, rf"Software\{LEGACY_SETTINGS_ORG}"
+        ) as key:
+            subkeys, values, _modified = winreg.QueryInfoKey(key)
+        if subkeys == 0 and values == 0:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, rf"Software\{LEGACY_SETTINGS_ORG}")
+    except OSError:
+        pass
 
 
 def _notify_running_instance() -> bool:

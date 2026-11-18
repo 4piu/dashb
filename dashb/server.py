@@ -11,10 +11,10 @@ import time
 import uuid
 from typing import Any, Dict, Optional, Set
 
-from quart import Quart, jsonify, request, send_file, websocket
+from quart import Quart, g, jsonify, request, send_file, websocket
 from hypercorn.config import Config
 from hypercorn.asyncio import serve
-from dashb import __version__
+from dashb import __version__, auth
 from dashb.probe import build_metric_catalog, lhm, shutdown_probe_executor
 from dashb.scheduler import ProbeRegistry
 from dashb.theme import (
@@ -68,42 +68,82 @@ logger = logging.getLogger(__name__)
 ENV_HOST = "DASHB_HOST"
 ENV_PORT = "DASHB_PORT"
 ENV_USERNAME = "DASHB_USERNAME"
-ENV_PASSWORD = "DASHB_PASSWORD"
+# A salted scrypt hash from dashb.auth.hash_password - never the password itself.
+ENV_PASSWORD_HASH = "DASHB_PASSWORD_HASH"
 
-# Auth credentials (can be empty to disable auth)
-username = os.getenv(ENV_USERNAME) or None
-password = os.getenv(ENV_PASSWORD) or None
+# Auth credentials (either empty disables auth)
+username: Optional[str] = None
+password_hash: Optional[str] = None
 AUTH_COOKIE_NAME = "dashb_auth"
+
+# scrypt is deliberately slow (~50 ms) and browsers resend the Basic header on
+# every request, so remember headers that already verified. Keyed by a SHA-256 of
+# the header to avoid keeping credentials in memory. Failures are never cached, so
+# guessing still pays the full scrypt cost per attempt.
+_VERIFIED_HEADER_CACHE_MAX = 64
+_verified_headers: set[bytes] = set()
+
+
+def configure_auth(new_username: Optional[str], new_password_hash: Optional[str]):
+    global username, password_hash
+    username = new_username or None
+    password_hash = new_password_hash or None
+    _verified_headers.clear()
+    if username and not auth.is_valid_hash(password_hash):
+        # Fail closed: a username with a missing/corrupt hash must not silently
+        # turn into "no auth".
+        logger.error("Basic Auth password hash is missing or invalid; denying access")
 
 
 def auth_enabled() -> bool:
-    return bool(username and password)
+    return bool(username)
 
 
-def check_basic_auth(auth_header: Optional[str]) -> bool:
-    """Return True if authorized or auth disabled, False otherwise."""
-    if not auth_enabled():
-        return True  # Auth disabled
+def _header_key(auth_header: str) -> bytes:
+    return hashlib.sha256(auth_header.encode("utf-8")).digest()
 
+
+def _verify_basic_auth_header(auth_header: Optional[str]) -> bool:
     if not auth_header or not auth_header.startswith("Basic "):
         return False
-
+    key = _header_key(auth_header)
+    if key in _verified_headers:
+        return True
     try:
-        decoded_auth = base64.b64decode(auth_header[6:]).decode("utf-8")
+        decoded_auth = base64.b64decode(auth_header[6:], validate=True).decode("utf-8")
         auth_username, auth_password = decoded_auth.split(":", 1)
-        assert username is not None and password is not None
-        return hmac.compare_digest(
-            auth_username.encode("utf-8"), username.encode("utf-8")
-        ) & hmac.compare_digest(auth_password.encode("utf-8"), password.encode("utf-8"))
-    except Exception:
+    except ValueError:
         return False
+    assert username is not None
+    username_ok = hmac.compare_digest(
+        auth_username.encode("utf-8"), username.encode("utf-8")
+    )
+    # Always run the hash so a wrong username isn't distinguishable by timing.
+    password_ok = auth.verify_password(auth_password, password_hash)
+    if not (username_ok and password_ok):
+        return False
+    if len(_verified_headers) >= _VERIFIED_HEADER_CACHE_MAX:
+        _verified_headers.clear()
+    _verified_headers.add(key)
+    return True
+
+
+async def check_basic_auth(auth_header: Optional[str]) -> bool:
+    """Return True if authorized or auth disabled, False otherwise."""
+    if not auth_enabled():
+        return True
+    if auth_header and _header_key(auth_header) in _verified_headers:
+        return True
+    # Keep the slow hash off the event loop.
+    return await asyncio.to_thread(_verify_basic_auth_header, auth_header)
 
 
 def auth_cookie_value() -> str:
+    # Keyed by the stored hash, so changing the password invalidates old cookies
+    # while cookies survive server restarts.
     assert username is not None
-    assert password is not None
     return hmac.new(
-        password.encode("utf-8"),
+        (password_hash or "").encode("utf-8"),
         username.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
@@ -112,7 +152,7 @@ def auth_cookie_value() -> str:
 def check_auth_cookie(cookie_value: Optional[str]) -> bool:
     if not auth_enabled():
         return True
-    if not cookie_value:
+    if not cookie_value or not auth.is_valid_hash(password_hash):
         return False
     return hmac.compare_digest(cookie_value, auth_cookie_value())
 
@@ -135,18 +175,19 @@ async def requires_auth():
         return None
     if check_auth_cookie(request.cookies.get(AUTH_COOKIE_NAME)):
         return None
-    if not check_basic_auth(request.headers.get("Authorization")):
+    if not await check_basic_auth(request.headers.get("Authorization")):
         return (
             "Unauthorized",
             401,
             {"WWW-Authenticate": 'Basic realm="Login Required"'},
         )
+    g.issue_auth_cookie = True
     return None
 
 
 @app.after_request
 async def set_auth_cookie(response):
-    if auth_enabled() and check_basic_auth(request.headers.get("Authorization")):
+    if g.get("issue_auth_cookie"):
         response.set_cookie(
             AUTH_COOKIE_NAME,
             auth_cookie_value(),
@@ -320,7 +361,7 @@ class WebSocketSession:
                 "proto": PROTOCOL_VERSION,
                 "server": {"name": "dashb", "version": __version__},
                 "capabilities": {
-                    "auth": "basic" if username and password else "none",
+                    "auth": "basic" if auth_enabled() else "none",
                     "tls": False,
                     "query": True,
                     "max_subscriptions": MAX_SUBSCRIPTIONS,
@@ -471,8 +512,8 @@ async def ws_handle():
 
     cookies = parse_cookie_header(websocket.headers.get("Cookie"))
     if not (
-        check_basic_auth(websocket.headers.get("Authorization"))
-        or check_auth_cookie(cookies.get(AUTH_COOKIE_NAME))
+        check_auth_cookie(cookies.get(AUTH_COOKIE_NAME))
+        or await check_basic_auth(websocket.headers.get("Authorization"))
     ):
         await session.send_error("unauthorized", "Unauthorized")
         await websocket.close(1008, "Unauthorized")
@@ -487,14 +528,10 @@ async def ws_handle():
 
 
 def run_server() -> None:
-    global username, password
-
     host = os.getenv(ENV_HOST) or "0.0.0.0"
     port = int(os.getenv(ENV_PORT) or 8080)
 
-    # basic auth
-    username = os.getenv(ENV_USERNAME) or None
-    password = os.getenv(ENV_PASSWORD) or None
+    configure_auth(os.getenv(ENV_USERNAME), os.getenv(ENV_PASSWORD_HASH))
 
     logger.info(f"Web root: {WEBROOT}")
     logger.info(f"Built-in theme root: {BUILTIN_THEME_ROOT}")

@@ -35,7 +35,14 @@ It's a single portable executable — no installer, nothing else to unpack.
    the dashboard, or `http://localhost:8080` on the same machine.
 
 Host, port, and Basic Auth can be changed from **Settings** in the GUI window
-(reopen the window by clicking the tray icon).
+(reopen the window by clicking the tray icon). Restart the server for changes to
+take effect.
+
+The Basic Auth password is never stored: Dashb keeps only a salted scrypt hash, so
+the Settings window can't show it back - leave the field empty to keep the current
+password, or type a new one to replace it. Note that Basic Auth over plain HTTP
+sends the password across your LAN essentially in cleartext, so use a password you
+don't use anywhere else.
 
 Enabling **Run on startup** registers the current executable for the current
 Windows user and starts Dashb in the system tray after sign-in. If the optional
@@ -51,9 +58,9 @@ nothing to remove from "Apps & features." To fully clean up:
 2. Delete the `Dashb.exe` file you downloaded.
 3. Optional — remove leftover user data:
    - Installed themes: `%APPDATA%\dashb\themes`
-   - Saved settings (host/port/auth), stored in the registry rather than a file:
-     `HKEY_CURRENT_USER\Software\MyApp\Dashb` (remove via `regedit`, or
-     `reg delete "HKCU\Software\MyApp\Dashb" /f` in a terminal).
+   - Saved settings (host/port/auth username and password hash), stored in the
+     registry rather than a file: `HKEY_CURRENT_USER\Software\4piu\Dashb` (remove
+     via `regedit`, or `reg delete "HKCU\Software\4piu\Dashb" /f` in a terminal).
    - If **Run on startup** was enabled, its `Dashb` value under
      `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`.
 
