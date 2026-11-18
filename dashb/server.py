@@ -62,9 +62,17 @@ logging.config.dictConfig(
 app = Quart(__name__)
 logger = logging.getLogger(__name__)
 
+# Server config comes from DASHB_-prefixed env vars set by the GUI. (Not plain
+# USERNAME/HOST: Windows always defines %USERNAME%, which would silently become
+# the auth username when the server runs outside the GUI.)
+ENV_HOST = "DASHB_HOST"
+ENV_PORT = "DASHB_PORT"
+ENV_USERNAME = "DASHB_USERNAME"
+ENV_PASSWORD = "DASHB_PASSWORD"
+
 # Auth credentials (can be empty to disable auth)
-username = os.getenv("USERNAME", None)
-password = os.getenv("PASSWORD", None)
+username = os.getenv(ENV_USERNAME) or None
+password = os.getenv(ENV_PASSWORD) or None
 AUTH_COOKIE_NAME = "dashb_auth"
 
 
@@ -83,7 +91,10 @@ def check_basic_auth(auth_header: Optional[str]) -> bool:
     try:
         decoded_auth = base64.b64decode(auth_header[6:]).decode("utf-8")
         auth_username, auth_password = decoded_auth.split(":", 1)
-        return auth_username == username and auth_password == password
+        assert username is not None and password is not None
+        return hmac.compare_digest(
+            auth_username.encode("utf-8"), username.encode("utf-8")
+        ) & hmac.compare_digest(auth_password.encode("utf-8"), password.encode("utf-8"))
     except Exception:
         return False
 
@@ -478,12 +489,12 @@ async def ws_handle():
 def run_server() -> None:
     global username, password
 
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 8080))
+    host = os.getenv(ENV_HOST) or "0.0.0.0"
+    port = int(os.getenv(ENV_PORT) or 8080)
 
     # basic auth
-    username = os.getenv("USERNAME", None)
-    password = os.getenv("PASSWORD", None)
+    username = os.getenv(ENV_USERNAME) or None
+    password = os.getenv(ENV_PASSWORD) or None
 
     logger.info(f"Web root: {WEBROOT}")
     logger.info(f"Built-in theme root: {BUILTIN_THEME_ROOT}")

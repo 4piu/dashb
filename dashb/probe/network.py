@@ -11,71 +11,65 @@ NETWORK_FIELDS = ("bytes_sent_per_s", "bytes_recv_per_s")
 
 
 class NetworkDelta:
+    """Per-interface and total send/receive rates.
+
+    Every interface is computed from the same pair of snapshots so subscribing to
+    several interfaces (or the total plus one interface) doesn't reset each other's
+    baseline.
+    """
+
     CACHE_WINDOW_S = 0.1
 
     def __init__(self):
         self.last_ts: Optional[float] = None
-        self.last_counters: Optional[Dict[str, Any]] = None
+        self.last_counters: Dict[str, Any] = {}
         self.cached_ts: Optional[float] = None
         self.cached_deltas: Dict[Optional[str], Dict[str, float]] = {}
 
     def bytes_per_second(self, iface: Optional[str] = None) -> Dict[str, float]:
         now = time.time()
         if self.cached_ts is not None and (now - self.cached_ts) < self.CACHE_WINDOW_S:
-            cached = self.cached_deltas.get(iface)
-            if cached is not None:
-                return cached
+            return self.cached_deltas.get(iface, _zero_rate())
 
         counters = psutil.net_io_counters(pernic=True)
-        if self.last_ts is None or self.last_counters is None:
-            self.last_ts = now
-            self.last_counters = counters
-            zero = {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
-            self.cached_ts = now
-            self.cached_deltas = {iface: zero}
-            return zero
-
-        elapsed = now - self.last_ts
-        if elapsed <= 0:
-            return {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
-
-        def diff(c1, c0):
-            return {
-                "bytes_sent_per_s": (c1.bytes_sent - c0.bytes_sent) / elapsed,
-                "bytes_recv_per_s": (c1.bytes_recv - c0.bytes_recv) / elapsed,
+        if self.last_ts is None:
+            deltas: Dict[Optional[str], Dict[str, float]] = {
+                None: _zero_rate(),
+                **{name: _zero_rate() for name in counters},
             }
-
-        if iface:
-            c1 = counters.get(iface)
-            c0 = self.last_counters.get(iface) if self.last_counters else None
-            if not c1 or not c0:
-                self.last_ts = now
-                self.last_counters = counters
-                zero = {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
-                self.cached_ts = now
-                self.cached_deltas = {iface: zero}
-                return zero
-            delta = diff(c1, c0)
         else:
-            total1_sent = total1_recv = 0
-            total0_sent = total0_recv = 0
-            for name, c1 in counters.items():
-                c0 = self.last_counters.get(name) if self.last_counters else None
-                total1_sent += c1.bytes_sent
-                total1_recv += c1.bytes_recv
-                if c0:
-                    total0_sent += c0.bytes_sent
-                    total0_recv += c0.bytes_recv
-            delta = {
-                "bytes_sent_per_s": (total1_sent - total0_sent) / elapsed,
-                "bytes_recv_per_s": (total1_recv - total0_recv) / elapsed,
+            elapsed = now - self.last_ts
+            if elapsed <= 0:
+                return self.cached_deltas.get(iface, _zero_rate())
+            deltas = {
+                name: _counter_rate(current, self.last_counters.get(name), elapsed)
+                for name, current in counters.items()
+            }
+            deltas[None] = {
+                field: sum(rate[field] for rate in deltas.values())
+                for field in NETWORK_FIELDS
             }
 
         self.last_ts = now
         self.last_counters = counters
         self.cached_ts = now
-        self.cached_deltas = {iface: delta}
-        return delta
+        self.cached_deltas = deltas
+        return deltas.get(iface, _zero_rate())
+
+
+def _zero_rate() -> Dict[str, float]:
+    return {"bytes_sent_per_s": 0.0, "bytes_recv_per_s": 0.0}
+
+
+def _counter_rate(current: Any, previous: Any, elapsed: float) -> Dict[str, float]:
+    if not current or not previous:
+        return _zero_rate()
+    # Counters reset when an adapter is disabled/re-enabled; clamp rather than
+    # report a huge negative rate.
+    return {
+        "bytes_sent_per_s": max(0.0, (current.bytes_sent - previous.bytes_sent) / elapsed),
+        "bytes_recv_per_s": max(0.0, (current.bytes_recv - previous.bytes_recv) / elapsed),
+    }
 
 
 _delta = NetworkDelta()

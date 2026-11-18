@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
     QMenu,
     QApplication,
-    QTextEdit,
+    QPlainTextEdit,
     QLabel,
     QPushButton,
     QVBoxLayout,
@@ -18,8 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
     QCheckBox,
     QLineEdit,
-    QSystemTrayIcon,
-    QMenu,
     QFileDialog,
     QMessageBox,
 )
@@ -51,6 +49,9 @@ def _theme_icon_path() -> Path:
 
 
 SINGLE_INSTANCE_KEY = "dashb-gui-singleton"
+# The server logs every websocket message at DEBUG; cap the in-window log so a
+# tray app left running for weeks doesn't grow without bound.
+MAX_LOG_LINES = 5000
 
 # Set up logging
 logging.config.dictConfig(
@@ -114,8 +115,9 @@ class MainWindow(QMainWindow):
         )
 
         # Create a read-only text for showing server log
-        self.text_log = QTextEdit(self)
+        self.text_log = QPlainTextEdit(self)
         self.text_log.setReadOnly(True)
+        self.text_log.setMaximumBlockCount(MAX_LOG_LINES)
 
         # Create a button for start/stop the server
         self.btn_server_toggle = QPushButton("Start Server", self)
@@ -222,10 +224,10 @@ class MainWindow(QMainWindow):
 
         # pass config as environment vars to the server.py script
         env = QProcessEnvironment.systemEnvironment()
-        env.insert("HOST", host)
-        env.insert("PORT", str(port))
-        env.insert("USERNAME", username)
-        env.insert("PASSWORD", password)
+        env.insert("DASHB_HOST", host)
+        env.insert("DASHB_PORT", str(port))
+        env.insert("DASHB_USERNAME", username)
+        env.insert("DASHB_PASSWORD", password)
         self.server_process.setProcessEnvironment(env)
 
         self.server_process.setWorkingDirectory(str(app_root()))
@@ -240,12 +242,16 @@ class MainWindow(QMainWindow):
         # Redirect standard output and error to log_message
         self.server_process.readyReadStandardOutput.connect(
             lambda: self.log_message(
-                self.server_process.readAllStandardOutput().data().decode()
+                self.server_process.readAllStandardOutput()
+                .data()
+                .decode(errors="replace")
             )
         )
         self.server_process.readyReadStandardError.connect(
             lambda: self.log_message(
-                self.server_process.readAllStandardError().data().decode()
+                self.server_process.readAllStandardError()
+                .data()
+                .decode(errors="replace")
             )
         )
         # Handle server process started and finished signals
@@ -328,8 +334,11 @@ class MainWindow(QMainWindow):
 
     def log_message(self, message: str):
         """Logs message to the text area."""
+        message = message.rstrip()
+        if not message:
+            return
         logging.info(message)
-        self.text_log.append(message)
+        self.text_log.appendPlainText(message)
 
     def on_open_themes_folder(self):
         """Open the writable user themes folder in the OS file browser, creating it first
