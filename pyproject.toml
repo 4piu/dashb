@@ -1,6 +1,6 @@
 [project]
 name = "dashb"
-version = "0.1.0"
+version = "0.2.0"
 description = "Windows tray app that serves a real-time system dashboard (CPU/GPU/RAM/network/disk) to browsers on your LAN"
 readme = "README.md"
 requires-python = ">=3.14"
